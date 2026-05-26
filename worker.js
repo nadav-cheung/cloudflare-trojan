@@ -83,11 +83,16 @@ async function fetchIPDB() {
     for (const r of results) {
         if (r.status === 'fulfilled' && r.value) all.push(...r.value);
     }
-    console.log(`[ipdb] total: ${all.length} unique: ${new Set(all).size}`);
-    if (all.length === 0) {
-        console.log(`[ipdb] all sources failed, falling back to DoH`);
-        return await resolveDoH();
+    try {
+        const doh = await resolveDoH();
+        if (doh.length > 0) {
+            console.log(`[ipdb] DoH: +${doh.length} IPs`);
+            all.push(...doh);
+        }
+    } catch (e) {
+        console.log(`[ipdb] DoH: failed - ${e.message}`);
     }
+    console.log(`[ipdb] total: ${all.length} unique: ${new Set(all).size}`);
     return [...new Set(all)];
 }
 
