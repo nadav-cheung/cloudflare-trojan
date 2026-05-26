@@ -72,8 +72,19 @@ async function fetchIPDB() {
     for (const r of results) {
         if (r.status === 'fulfilled') all.push(...r.value);
     }
-    if (all.length === 0) throw new Error('all sources empty');
+    if (all.length === 0) return await resolveDoH();
     return [...new Set(all)];
+}
+
+async function resolveDoH() {
+    const resp = await fetch('https://cloudflare-dns.com/dns-query?name=proxyip.cmliussss.net&type=A', {
+        headers: { accept: 'application/dns-json' },
+    });
+    if (!resp.ok) throw new Error('DoH failed');
+    const data = await resp.json();
+    const ips = (data.Answer || []).filter(a => a.type === 1).map(a => a.data);
+    if (ips.length === 0) throw new Error('DoH no IPs');
+    return ips;
 }
 
 async function probeBatch(candidates, maxAlive = Infinity) {
