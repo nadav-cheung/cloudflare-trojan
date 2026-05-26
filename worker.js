@@ -4,13 +4,15 @@ const DEFAULT_SHA224_PASS = '08f32643dbdacf81d0d511f1ee24b06de759e90f8edf742bbdc
 const DEFAULT_PASSWORD = 'ca110us';
 const DEFAULT_PROXYIP = '';
 const FALLBACK_PROXY_IPS = [
-    '64.110.104.30',
-    '144.24.140.37',
+    '166.1.160.140',
+    '107.172.16.110',
+    '64.188.27.145',
+    '43.169.18.179',
 ];
 const PROXY_IP_SOURCES = [
     'https://ipdb.api.030101.xyz/?type=proxy;bestproxy',
 ];
-const POOL_MIN = 30;
+const POOL_MIN = 60;
 const POOL_MAX = 200;
 const PROBE_CONCURRENCY = 20;
 const PROBE_TIMEOUT_MS = 2000;
