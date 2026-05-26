@@ -69,10 +69,12 @@ async function fetchIPDB() {
                 .map(s => s.trim())
                 .filter(s => s && !s.startsWith('#'));
             if (ips.length === 0) throw new Error('source empty');
-            console.log(`[ipdb] ${new URL(url).search}: ${ips.length} IPs`);
+            const tag = new URL(url).search || new URL(url).pathname.split('/').pop();
+            console.log(`[ipdb] ${tag}: ${ips.length} IPs`);
             return ips;
         } catch (e) {
-            console.log(`[ipdb] ${new URL(url).search}: failed - ${e.message}`);
+            const tag = new URL(url).search || new URL(url).pathname.split('/').pop();
+            console.log(`[ipdb] ${tag}: failed - ${e.message}`);
         } finally {
             clearTimeout(timer);
         }
