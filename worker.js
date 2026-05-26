@@ -18,6 +18,16 @@ let _proxyIPCache = null;
 let _proxyIPCacheExpiry = 0;
 let _proxyIPFetching = null;
 
+const _coldStartInit = _doFetchProxyIPs().then((valid) => {
+    if (valid.length > 0) {
+        _proxyIPCache = valid;
+        _proxyIPCacheExpiry = Date.now() + PROXY_IP_CACHE_TTL;
+        console.log(`[proxyip] cold start: ${valid.length} valid`);
+    }
+}).catch(() => {
+    console.log('[proxyip] cold start init failed, deferring to first request');
+});
+
 function _doFetchProxyIPs() {
     return Promise.any(PROXY_IP_SOURCES.map(async (url) => {
         const controller = new AbortController();
@@ -87,6 +97,12 @@ async function getProxyIPList(ctx) {
             triggerBackgroundRefresh(ctx);
         }
         return _proxyIPCache;
+    }
+    if (_coldStartInit) {
+        await _coldStartInit;
+        if (_proxyIPCache && _proxyIPCache.length > 0 && now < _proxyIPCacheExpiry) {
+            return _proxyIPCache;
+        }
     }
     if (!_proxyIPFetching) {
         _proxyIPFetching = _doFetchProxyIPs().catch(() => {
