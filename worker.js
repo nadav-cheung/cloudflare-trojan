@@ -22,7 +22,7 @@ const _coldStartInit = _doFetchProxyIPs().then((valid) => {
     if (valid.length > 0) {
         _proxyIPCache = valid;
         _proxyIPCacheExpiry = Date.now() + PROXY_IP_CACHE_TTL;
-        console.log(`[proxyip] cold start: ${valid.length} valid`);
+        console.log(`[proxyip] cold start: ${valid.length} valid — ${valid.join(', ')}`);
     }
 }).catch(() => {
     console.log('[proxyip] cold start init failed, deferring to first request');
@@ -80,7 +80,7 @@ function _doFetchProxyIPs() {
         if (valid.length > 0) {
             _proxyIPCache = valid;
             _proxyIPCacheExpiry = Date.now() + PROXY_IP_CACHE_TTL;
-            console.log(`[proxyip] validated ${valid.length}/${maxValid} after probing ${pool.length} total (${url})`);
+            console.log(`[proxyip] validated ${valid.length}/${maxValid}: ${valid.join(', ')} (${url})`);
         } else {
             console.error(`[proxyip] 0 valid after probing ${pool.length} IPs from ${url}`);
             throw new Error(`0 valid from ${url}`);
