@@ -23,6 +23,7 @@ const worker_default = {
                 return new Response("Server configuration error", { status: 500 });
             }
             const proxyIP = env.PROXYIP || DEFAULT_PROXYIP;
+            const proxyPort = env.PROXYPORT ? parseInt(env.PROXYPORT) : null;
             const cleartextPassword = env.PASSWORD || DEFAULT_PASSWORD;
             const upgradeHeader = request.headers.get("Upgrade");
             if (!upgradeHeader || upgradeHeader.toLowerCase() !== "websocket") {
@@ -46,7 +47,7 @@ const worker_default = {
                         return new Response("404 Not found", { status: 404 });
                 }
             } else {
-                return await trojanOverWSHandler(request, sha224Password, proxyIP);
+                return await trojanOverWSHandler(request, sha224Password, proxyIP, proxyPort);
             }
         } catch (err) {
             console.error("fetch error:", err);
@@ -55,7 +56,7 @@ const worker_default = {
     }
 };
 
-async function trojanOverWSHandler(request, sha224Password, proxyIP) {
+async function trojanOverWSHandler(request, sha224Password, proxyIP, proxyPort) {
     const webSocketPair = new WebSocketPair();
     const [client, webSocket] = Object.values(webSocketPair);
     webSocket.accept();
@@ -91,7 +92,7 @@ async function trojanOverWSHandler(request, sha224Password, proxyIP) {
             if (hasError) {
                 throw new Error(message);
             }
-            handleTCPOutBound(remoteSocketWrapper, addressRemote, portRemote, rawClientData, webSocket, proxyIP, log).catch((err) => {
+            handleTCPOutBound(remoteSocketWrapper, addressRemote, portRemote, rawClientData, webSocket, proxyIP, proxyPort, log).catch((err) => {
                 log("handleTCPOutBound error", err);
                 safeCloseWebSocket(webSocket);
             });
@@ -198,7 +199,7 @@ async function parseTrojanHeader(buffer, sha224Password) {
     };
 }
 
-async function handleTCPOutBound(remoteSocket, addressRemote, portRemote, rawClientData, webSocket, proxyIP, log) {
+async function handleTCPOutBound(remoteSocket, addressRemote, portRemote, rawClientData, webSocket, proxyIP, proxyPort, log) {
     async function connectAndWrite(address, port) {
         const tcpSocket = connect({ hostname: address, port });
         remoteSocket.value = tcpSocket;
@@ -213,7 +214,8 @@ async function handleTCPOutBound(remoteSocket, addressRemote, portRemote, rawCli
         return tcpSocket;
     }
     async function retry() {
-        const tcpSocket = await connectAndWrite(proxyIP || addressRemote, portRemote);
+        const retryPort = proxyPort || portRemote;
+        const tcpSocket = await connectAndWrite(proxyIP || addressRemote, retryPort);
         tcpSocket.closed.catch((error) => {
             console.log("retry tcpSocket closed error", error);
         }).finally(() => {
