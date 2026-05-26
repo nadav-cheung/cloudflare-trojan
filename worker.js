@@ -276,8 +276,10 @@ async function handleTCPOutBound(remoteSocket, addressRemote, portRemote, rawCli
         return tcpSocket;
     }
     async function retry() {
-        const retryPort = proxyPort || portRemote;
-        const tcpSocket = await connectAndWrite(proxyIP || addressRemote, retryPort);
+        const retryAddr = proxyIP || addressRemote;
+        const [host, portStr] = retryAddr.split(':');
+        const retryPort = portStr ? parseInt(portStr) : (proxyPort || portRemote);
+        const tcpSocket = await connectAndWrite(host, retryPort);
         tcpSocket.closed.catch((error) => {
             console.log("retry tcpSocket closed error", error);
         }).finally(() => {
