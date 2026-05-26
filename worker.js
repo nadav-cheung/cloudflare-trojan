@@ -4,9 +4,19 @@ const DEFAULT_SHA224_PASS = '08f32643dbdacf81d0d511f1ee24b06de759e90f8edf742bbdc
 const DEFAULT_PASSWORD = 'ca110us';
 const DEFAULT_PROXYIP = '';
 const PROXY_IPS = [
-    'cdn.xn--b6gac.eu.org',
-    'cdn-all.xn--b6gac.eu.org',
-    'workers.bestip.one'
+    'yg1.ygkkk.dpdns.org',
+    'yg2.ygkkk.dpdns.org',
+    'yg3.ygkkk.dpdns.org',
+    'yg4.ygkkk.dpdns.org',
+    'yg5.ygkkk.dpdns.org',
+    'yg6.ygkkk.dpdns.org',
+    'yg7.ygkkk.dpdns.org',
+    'yg8.ygkkk.dpdns.org',
+    'yg9.ygkkk.dpdns.org',
+    'yg10.ygkkk.dpdns.org',
+    'yg11.ygkkk.dpdns.org',
+    'cloudflare-ech.com',
+    'cf.090227.xyz'
 ];
 const textDecoder = new TextDecoder();
 
