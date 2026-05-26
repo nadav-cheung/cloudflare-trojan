@@ -8,8 +8,7 @@ const FALLBACK_PROXY_IPS = [
     '144.24.140.37',
 ];
 const PROXY_IP_SOURCES = [
-    'https://ipdb.api.030101.xyz/?type=proxy',
-    'https://ipdb.api.030101.xyz/?type=bestproxy',
+    'https://ipdb.api.030101.xyz/?type=proxy;bestproxy',
 ];
 const POOL_MIN = 30;
 const POOL_MAX = 200;
@@ -18,6 +17,8 @@ const PROBE_TIMEOUT_MS = 2000;
 
 let _pool = [];
 let _refilling = null;
+let _lastRefillFail = 0;
+const REFILL_RETRY_INTERVAL_MS = 60_000;
 
 function getPool() {
     return _pool.length > 0 ? _pool : FALLBACK_PROXY_IPS;
@@ -134,10 +135,11 @@ const worker_default = {
                 return new Response("Server configuration error", { status: 500 });
             }
             const configProxyIP = env.PROXYIP || DEFAULT_PROXYIP;
-            if (!configProxyIP && _pool.length === 0) {
+            if (!configProxyIP && _pool.length === 0 && (Date.now() - _lastRefillFail) > REFILL_RETRY_INTERVAL_MS) {
                 try {
                     await refill();
                 } catch (e) {
+                    _lastRefillFail = Date.now();
                     console.error('[pool] cold start refill failed:', e);
                 }
             }
