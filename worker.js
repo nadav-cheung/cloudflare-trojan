@@ -4,14 +4,16 @@ const DEFAULT_SHA224_PASS = '08f32643dbdacf81d0d511f1ee24b06de759e90f8edf742bbdc
 const DEFAULT_PASSWORD = 'ca110us';
 const DEFAULT_PROXYIP = '';
 const FALLBACK_PROXY_IPS = [
+    '64.110.104.30',
+    '144.24.140.37',
     '8.212.12.98',
-    '47.242.218.87',
-    '8.219.245.214',
 ];
 const PROXY_IP_SOURCES = [
-    'https://ipdb.api.030101.xyz/?type=bestproxy',
+    'https://ipdb.api.030101.xyz/?type=proxy',
 ];
 const PROXY_IP_CACHE_TTL = 30 * 60 * 1000;
+
+const PROXY_IP_REFRESH_MS = 10 * 60 * 1000;
 
 let _proxyIPCache = null;
 let _proxyIPCacheExpiry = 0;
@@ -21,36 +23,69 @@ function _doFetchProxyIPs() {
     return Promise.any(PROXY_IP_SOURCES.map(async (url) => {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 5000);
+        let rawIPs = [];
         try {
             const resp = await fetch(url, { signal: controller.signal });
             if (resp.ok) {
                 const text = await resp.text();
-                const ips = text.trim().split('\n')
+                rawIPs = text.trim().split('\n')
                     .map(s => s.trim())
                     .filter(s => s && !s.startsWith('#'));
-                if (ips.length > 0) {
-                    _proxyIPCache = ips;
-                    _proxyIPCacheExpiry = Date.now() + PROXY_IP_CACHE_TTL;
-                    console.log(`[proxyip] refreshed: ${ips.length} IPs from ${url}`);
-                    return ips;
-                }
             }
         } catch (e) {
             if (e.name === 'AbortError') {
-                console.error(`[proxyip] timeout: ${url}`);
+                console.error(`[proxyip] fetch timeout: ${url}`);
             } else {
                 console.error(`[proxyip] fetch error: ${e.message}`);
             }
         } finally {
             clearTimeout(timer);
         }
-        throw new Error(`source failed: ${url}`);
+        if (rawIPs.length === 0) throw new Error(`source empty: ${url}`);
+
+        const sample = [];
+        const used = new Set();
+        const maxSample = Math.min(10, rawIPs.length);
+        while (sample.length < maxSample) {
+            const idx = Math.floor(Math.random() * rawIPs.length);
+            if (!used.has(idx)) {
+                used.add(idx);
+                sample.push(rawIPs[idx]);
+            }
+        }
+
+        const valid = [];
+        for (const addr of sample) {
+            const [host, portStr] = addr.includes(':') ? addr.split(':') : [addr, '443'];
+            const port = parseInt(portStr);
+            try {
+                const sock = connect({ hostname: host, port });
+                await sock.opened;
+                sock.close();
+                valid.push(addr);
+            } catch (_) {
+                // dead IP, skip
+            }
+        }
+
+        if (valid.length > 0) {
+            _proxyIPCache = valid;
+            _proxyIPCacheExpiry = Date.now() + PROXY_IP_CACHE_TTL;
+            console.log(`[proxyip] validated ${valid.length}/${maxSample} from ${rawIPs.length} total (${url})`);
+        } else {
+            console.error(`[proxyip] 0/${maxSample} valid from ${url}`);
+        }
+        return valid;
     }));
 }
 
-async function getProxyIPList() {
+async function getProxyIPList(ctx) {
     const now = Date.now();
     if (_proxyIPCache && _proxyIPCache.length > 0 && now < _proxyIPCacheExpiry) {
+        const age = now - (_proxyIPCacheExpiry - PROXY_IP_CACHE_TTL);
+        if (age > PROXY_IP_REFRESH_MS && !_proxyIPFetching) {
+            triggerBackgroundRefresh(ctx);
+        }
         return _proxyIPCache;
     }
     if (!_proxyIPFetching) {
@@ -61,6 +96,21 @@ async function getProxyIPList() {
         });
     }
     return _proxyIPFetching;
+}
+
+function triggerBackgroundRefresh(ctx) {
+    _proxyIPFetching = _doFetchProxyIPs().then((valid) => {
+        if (valid.length > 0) {
+            _proxyIPCache = valid;
+            _proxyIPCacheExpiry = Date.now() + PROXY_IP_CACHE_TTL;
+        }
+        return valid;
+    }).catch(() => {
+        return _proxyIPCache || FALLBACK_PROXY_IPS;
+    }).finally(() => {
+        _proxyIPFetching = null;
+    });
+    if (ctx) ctx.waitUntil(_proxyIPFetching);
 }
 
 const textDecoder = new TextDecoder();
@@ -83,7 +133,7 @@ const worker_default = {
                 return new Response("Server configuration error", { status: 500 });
             }
             const configProxyIP = env.PROXYIP || DEFAULT_PROXYIP;
-            const proxyIPList = await getProxyIPList();
+            const proxyIPList = await getProxyIPList(ctx);
             const proxyIP = configProxyIP || proxyIPList[Math.floor(Math.random() * proxyIPList.length)];
             const proxyPort = env.PROXYPORT ? parseInt(env.PROXYPORT) : null;
             const cleartextPassword = env.PASSWORD || DEFAULT_PASSWORD;
@@ -115,6 +165,18 @@ const worker_default = {
             console.error("fetch error:", err);
             return new Response("Bad Request", { status: 400 });
         }
+    },
+
+    async scheduled(controller, env, ctx) {
+        ctx.waitUntil((async () => {
+            console.log('[proxyip] cron refresh start');
+            const valid = await _doFetchProxyIPs().catch(() => []);
+            if (valid.length > 0) {
+                _proxyIPCache = valid;
+                _proxyIPCacheExpiry = Date.now() + PROXY_IP_CACHE_TTL;
+            }
+            console.log(`[proxyip] cron refresh done: ${valid.length} valid`);
+        })());
     }
 };
 
@@ -275,17 +337,39 @@ async function handleTCPOutBound(remoteSocket, addressRemote, portRemote, rawCli
         }
         return tcpSocket;
     }
-    async function retry() {
-        const retryAddr = proxyIP || addressRemote;
-        const [host, portStr] = retryAddr.split(':');
-        const retryPort = portStr ? parseInt(portStr) : (proxyPort || portRemote);
-        const tcpSocket = await connectAndWrite(host, retryPort);
+    async function tryRetry(retryAddr, retryPort) {
+        const tcpSocket = await connectAndWrite(retryAddr, retryPort);
         tcpSocket.closed.catch((error) => {
             console.log("retry tcpSocket closed error", error);
         }).finally(() => {
             safeCloseWebSocket(webSocket);
         });
         await remoteSocketToWS(tcpSocket, webSocket, null, log);
+    }
+    async function retry() {
+        const pool = (_proxyIPCache && _proxyIPCache.length > 0) ? _proxyIPCache : FALLBACK_PROXY_IPS;
+        const maxRetries = 3;
+        const tried = new Set();
+        const candidates = proxyIP && proxyIP !== addressRemote ? [proxyIP] : [];
+        for (let i = 0; i < maxRetries && tried.size < pool.length; i++) {
+            let idx;
+            do { idx = Math.floor(Math.random() * pool.length); } while (tried.has(idx));
+            tried.add(idx);
+            candidates.push(pool[idx]);
+        }
+        for (const addr of candidates) {
+            const [host, portStr] = addr.includes(':') ? addr.split(':') : [addr, null];
+            const port = portStr ? parseInt(portStr) : (proxyPort || portRemote);
+            try {
+                await tryRetry(host, port);
+                log(`retry success via ${host}:${port}`);
+                return;
+            } catch (e) {
+                log(`retry ${host}:${port} failed: ${e.message}`);
+            }
+        }
+        log(`retry exhausted after ${candidates.length} attempts`);
+        safeCloseWebSocket(webSocket);
     }
     try {
         const tcpSocket = await connectAndWrite(addressRemote, portRemote);
