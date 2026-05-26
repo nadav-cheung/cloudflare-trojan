@@ -24,7 +24,13 @@ wrangler login
 # 设置密码和后备代理 IP
 # 编辑 wrangler.toml 中的 vars：
 #   SHA224PASS - 你的 SHA224 哈希密码
+#   PASSWORD   - 明文密码（用于 /link 端点生成 Trojan URL）
 #   PROXYIP    - （可选）后备代理 IP
+#   LINK_TOKEN - （可选）/link 端点访问令牌
+
+# 对于敏感值，推荐使用 secret：
+wrangler secret put SHA224PASS
+wrangler secret put PASSWORD
 
 # 部署
 wrangler deploy
@@ -38,7 +44,10 @@ echo -n "你的密码" | sha224sum
 
 ## 客户端配置
 
-部署后，访问 `https://你的域名/link` 获取 Trojan 链接，可直接导入兼容客户端。
+部署后，访问以下地址获取 Trojan 链接（可直接导入兼容客户端）：
+
+- 如未设置 `LINK_TOKEN`：`https://你的域名/link`
+- 如设置了 `LINK_TOKEN`：`https://你的域名/link?token=你的令牌`
 
 或手动配置：
 
@@ -46,7 +55,7 @@ echo -n "你的密码" | sha224sum
 类型:     Trojan
 地址:     你的域名
 端口:     443
-密码:     08f32643dbdacf81d0d511f1ee24b06de759e90f8edf742bbdc57d88
+密码:     ca110us
 传输:     ws
 TLS:      开启
 WS 主机:  你的域名

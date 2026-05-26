@@ -1,9 +1,9 @@
-// src/worker.js
 import { connect } from "cloudflare:sockets";
 
 const DEFAULT_SHA224_PASS = '08f32643dbdacf81d0d511f1ee24b06de759e90f8edf742bbdc57d88';
 const DEFAULT_PASSWORD = 'ca110us';
 const DEFAULT_PROXYIP = '';
+const textDecoder = new TextDecoder();
 
 if (!isValidSHA224(DEFAULT_SHA224_PASS)) {
     throw new Error('sha224Password is not valid');
@@ -12,27 +12,35 @@ if (!isValidSHA224(DEFAULT_SHA224_PASS)) {
 const worker_default = {
     /**
      * @param {import("@cloudflare/workers-types").Request} request
-     * @param {{SHA224PASS: string, PROXYIP: string, PASSWORD: string}} env
+     * @param {{SHA224PASS: string, PROXYIP: string, PASSWORD: string, LINK_TOKEN: string}} env
      * @param {import("@cloudflare/workers-types").ExecutionContext} ctx
      * @returns {Promise<Response>}
      */
     async fetch(request, env, ctx) {
         try {
-            const proxyIP = env.PROXYIP || DEFAULT_PROXYIP;
             const sha224Password = env.SHA224PASS || DEFAULT_SHA224_PASS;
+            if (env.SHA224PASS && !isValidSHA224(env.SHA224PASS)) {
+                return new Response("Server configuration error", { status: 500 });
+            }
+            const proxyIP = env.PROXYIP || DEFAULT_PROXYIP;
             const cleartextPassword = env.PASSWORD || DEFAULT_PASSWORD;
             const upgradeHeader = request.headers.get("Upgrade");
             if (!upgradeHeader || upgradeHeader.toLowerCase() !== "websocket") {
                 const url = new URL(request.url);
                 switch (url.pathname) {
                     case "/link": {
+                        const linkToken = env.LINK_TOKEN;
+                        if (linkToken && url.searchParams.get('token') !== linkToken) {
+                            return new Response("404 Not found", { status: 404 });
+                        }
                         const host = request.headers.get('Host');
-                        return new Response(`trojan://${cleartextPassword}@${host}:443/?type=ws&host=${host}&security=tls`, {
-                            status: 200,
-                            headers: {
-                                "Content-Type": "text/plain;charset=utf-8",
+                        return new Response(
+                            `trojan://${encodeURIComponent(cleartextPassword)}@${host}:443/?type=ws&host=${host}&security=tls`,
+                            {
+                                status: 200,
+                                headers: { "Content-Type": "text/plain;charset=utf-8" }
                             }
-                        });
+                        );
                     }
                     default:
                         return new Response("404 Not found", { status: 404 });
@@ -41,8 +49,8 @@ const worker_default = {
                 return await trojanOverWSHandler(request, sha224Password, proxyIP);
             }
         } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            return new Response(message, { status: 400 });
+            console.error("fetch error:", err);
+            return new Response("Bad Request", { status: 400 });
         }
     }
 };
@@ -58,19 +66,17 @@ async function trojanOverWSHandler(request, sha224Password, proxyIP) {
     };
     const earlyDataHeader = request.headers.get("sec-websocket-protocol") || "";
     const readableWebSocketStream = makeReadableWebSocketStream(webSocket, earlyDataHeader, log);
-    let remoteSocketWrapper = {
-        value: null
-    };
-    let udpStreamWrite = null;
+    let remoteSocketWrapper = { value: null };
+
     readableWebSocketStream.pipeTo(new WritableStream({
         async write(chunk, controller) {
-            if (udpStreamWrite) {
-                return udpStreamWrite(chunk);
-            }
             if (remoteSocketWrapper.value) {
                 const writer = remoteSocketWrapper.value.writable.getWriter();
-                await writer.write(chunk);
-                writer.releaseLock();
+                try {
+                    await writer.write(chunk);
+                } finally {
+                    writer.releaseLock();
+                }
                 return;
             }
             const {
@@ -107,93 +113,83 @@ async function trojanOverWSHandler(request, sha224Password, proxyIP) {
 }
 
 async function parseTrojanHeader(buffer, sha224Password) {
-    if (buffer.byteLength < 56) {
-        return {
-            hasError: true,
-            message: "invalid data"
-        };
+    if (buffer.byteLength < 58) {
+        return { hasError: true, message: "invalid data" };
     }
-    let crLfIndex = 56;
-    if (new Uint8Array(buffer.slice(56, 57))[0] !== 0x0d || new Uint8Array(buffer.slice(57, 58))[0] !== 0x0a) {
-        return {
-            hasError: true,
-            message: "invalid header format (missing CR LF)"
-        };
+    const bufView = new DataView(buffer);
+    if (bufView.getUint8(56) !== 0x0d || bufView.getUint8(57) !== 0x0a) {
+        return { hasError: true, message: "invalid header format (missing CR LF)" };
     }
-    const password = new TextDecoder().decode(buffer.slice(0, crLfIndex));
-    if (password !== sha224Password) {
-        return {
-            hasError: true,
-            message: "invalid password"
-        };
+    const password = textDecoder.decode(buffer.slice(0, 56));
+    if (!timingSafeEqual(password, sha224Password)) {
+        return { hasError: true, message: "invalid password" };
     }
 
-    const socks5DataBuffer = buffer.slice(crLfIndex + 2);
-    if (socks5DataBuffer.byteLength < 6) {
-        return {
-            hasError: true,
-            message: "invalid SOCKS5 request data"
-        };
+    const socks5DataBuffer = buffer.slice(58);
+    if (socks5DataBuffer.byteLength < 4) {
+        return { hasError: true, message: "invalid SOCKS5 request data" };
     }
 
-    const view = new DataView(socks5DataBuffer);
-    const cmd = view.getUint8(0);
+    const socks5View = new DataView(socks5DataBuffer);
+    const cmd = socks5View.getUint8(0);
     if (cmd !== 1) {
-        return {
-            hasError: true,
-            message: "unsupported command, only TCP (CONNECT) is allowed"
-        };
+        return { hasError: true, message: "unsupported command, only TCP (CONNECT) is allowed" };
     }
 
-    const atype = view.getUint8(1);
-    // 0x01: IPv4 address
-    // 0x03: Domain name
-    // 0x04: IPv6 address
+    const atype = socks5View.getUint8(1);
     let addressLength = 0;
     let addressIndex = 2;
     let address = "";
     switch (atype) {
-        case 1:
+        case 1: {
             addressLength = 4;
+            if (socks5DataBuffer.byteLength < addressIndex + addressLength + 2) {
+                return { hasError: true, message: "invalid IPv4 address data" };
+            }
             address = new Uint8Array(
-              socks5DataBuffer.slice(addressIndex, addressIndex + addressLength)
+                socks5DataBuffer.slice(addressIndex, addressIndex + addressLength)
             ).join(".");
             break;
-        case 3:
+        }
+        case 3: {
+            if (socks5DataBuffer.byteLength < addressIndex + 1) {
+                return { hasError: true, message: "invalid domain address data" };
+            }
             addressLength = new Uint8Array(
-              socks5DataBuffer.slice(addressIndex, addressIndex + 1)
+                socks5DataBuffer.slice(addressIndex, addressIndex + 1)
             )[0];
+            if (socks5DataBuffer.byteLength < addressIndex + 1 + addressLength + 2) {
+                return { hasError: true, message: "invalid domain address data" };
+            }
             addressIndex += 1;
-            address = new TextDecoder().decode(
-              socks5DataBuffer.slice(addressIndex, addressIndex + addressLength)
+            address = textDecoder.decode(
+                socks5DataBuffer.slice(addressIndex, addressIndex + addressLength)
             );
             break;
-        case 4:
+        }
+        case 4: {
             addressLength = 16;
+            if (socks5DataBuffer.byteLength < addressIndex + addressLength + 2) {
+                return { hasError: true, message: "invalid IPv6 address data" };
+            }
             const dataView = new DataView(socks5DataBuffer.slice(addressIndex, addressIndex + addressLength));
             const ipv6 = [];
             for (let i = 0; i < 8; i++) {
-                ipv6.push(dataView.getUint16(i * 2).toString(16).padStart(4, '0'));
+                ipv6.push(dataView.getUint16(i * 2).toString(16));
             }
-            address = ipv6.join(":");
+            address = compressIPv6(ipv6);
             break;
+        }
         default:
-            return {
-                hasError: true,
-                message: `invalid addressType is ${atype}`
-            };
+            return { hasError: true, message: `invalid addressType is ${atype}` };
     }
 
     if (!address) {
-        return {
-            hasError: true,
-            message: `address is empty, addressType is ${atype}`
-        };
+        return { hasError: true, message: `address is empty, addressType is ${atype}` };
     }
 
     const portIndex = addressIndex + addressLength;
-    const portBuffer = socks5DataBuffer.slice(portIndex, portIndex + 2);
-    const portRemote = new DataView(portBuffer).getUint16(0);
+    const portRemote = new DataView(socks5DataBuffer.slice(portIndex, portIndex + 2)).getUint16(0);
     return {
         hasError: false,
         addressRemote: address,
@@ -204,12 +200,10 @@ async function parseTrojanHeader(buffer, sha224Password) {
 
 async function handleTCPOutBound(remoteSocket, addressRemote, portRemote, rawClientData, webSocket, proxyIP, log) {
     async function connectAndWrite(address, port) {
-        const tcpSocket = connect({
-            hostname: address,
-            port
-        });
+        const tcpSocket = connect({ hostname: address, port });
         remoteSocket.value = tcpSocket;
         log(`connected to ${address}:${port}`);
+        await tcpSocket.opened;
         const writer = tcpSocket.writable.getWriter();
         try {
             await writer.write(rawClientData);
@@ -236,17 +230,12 @@ function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) {
     const stream = new ReadableStream({
         start(controller) {
             webSocketServer.addEventListener("message", (event) => {
-                if (readableStreamCancel) {
-                    return;
-                }
-                const message = event.data;
-                controller.enqueue(message);
+                if (readableStreamCancel) return;
+                controller.enqueue(event.data);
             });
             webSocketServer.addEventListener("close", () => {
                 safeCloseWebSocket(webSocketServer);
-                if (readableStreamCancel) {
-                    return;
-                }
+                if (readableStreamCancel) return;
                 controller.close();
             });
             webSocketServer.addEventListener("error", (err) => {
@@ -260,11 +249,8 @@ function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) {
                 controller.enqueue(earlyData);
             }
         },
-        pull(controller) {},
         cancel(reason) {
-            if (readableStreamCancel) {
-                return;
-            }
+            if (readableStreamCancel) return;
             log(`readableStream was canceled, due to ${reason}`);
             readableStreamCancel = true;
             safeCloseWebSocket(webSocketServer);
@@ -277,12 +263,6 @@ async function remoteSocketToWS(remoteSocket, webSocket, retry, log) {
     let hasIncomingData = false;
     await remoteSocket.readable.pipeTo(
         new WritableStream({
-            start() {},
-            /**
-             *
-             * @param {Uint8Array} chunk
-             * @param {*} controller
-             */
             async write(chunk, controller) {
                 hasIncomingData = true;
                 if (webSocket.readyState !== WS_READY_STATE_OPEN) {
@@ -300,12 +280,49 @@ async function remoteSocketToWS(remoteSocket, webSocket, retry, log) {
         })
     ).catch((error) => {
         console.error(`remoteSocketToWS error:`, error.stack || error);
-        safeCloseWebSocket(webSocket);
     });
     if (hasIncomingData === false && retry) {
         log(`retry`);
         await retry();
+    } else {
+        safeCloseWebSocket(webSocket);
     }
+}
+
+function timingSafeEqual(a, b) {
+    const encoder = new TextEncoder();
+    const bufA = encoder.encode(a);
+    const bufB = encoder.encode(b);
+    const len = Math.max(bufA.length, bufB.length);
+    let result = bufA.length ^ bufB.length;
+    for (let i = 0; i < len; i++) {
+        result |= (bufA[i] || 0) ^ (bufB[i] || 0);
+    }
+    return result === 0;
+}
+
+function compressIPv6(groups) {
+    let bestStart = -1, bestLen = 0;
+    let curStart = -1, curLen = 0;
+    for (let i = 0; i < groups.length; i++) {
+        if (groups[i] === '0') {
+            if (curStart === -1) curStart = i;
+            curLen++;
+            if (curLen > bestLen) {
+                bestStart = curStart;
+                bestLen = curLen;
+            }
+        } else {
+            curStart = -1;
+            curLen = 0;
+        }
+    }
+    if (bestLen >= 2) {
+        const before = groups.slice(0, bestStart).join(':');
+        const after = groups.slice(bestStart + bestLen).join(':');
+        return before + '::' + after;
+    }
+    return groups.join(':');
 }
 
 function isValidSHA224(hash) {
@@ -327,8 +344,8 @@ function base64ToArrayBuffer(base64Str) {
     }
 }
 
-let WS_READY_STATE_OPEN = 1;
-let WS_READY_STATE_CLOSING = 2;
+const WS_READY_STATE_OPEN = 1;
+const WS_READY_STATE_CLOSING = 2;
 
 function safeCloseWebSocket(socket) {
     try {
@@ -339,7 +356,5 @@ function safeCloseWebSocket(socket) {
         console.error("safeCloseWebSocket error", error);
     }
 }
-export {
-    worker_default as default
-};
+export { worker_default as default };
 //# sourceMappingURL=worker.js.map

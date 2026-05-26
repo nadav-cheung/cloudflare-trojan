@@ -6,9 +6,18 @@ compatibility_date = "2024-12-01"
 SHA224PASS = "08f32643dbdacf81d0d511f1ee24b06de759e90f8edf742bbdc57d88"
 PASSWORD = "ca110us"
 PROXYIP = ""
+# Set LINK_TOKEN to secure the /link endpoint (optional)
+# If set, /link requires ?token=<value> query parameter
+# LINK_TOKEN = "your-secret-token"
 
 # Environment-specific overrides (optional: `wrangler deploy -e production`)
 # [env.production.vars]
 # SHA224PASS = "your-production-password-hash"
 # PASSWORD = "your-password"
 # PROXYIP = "1.2.3.4"
+# LINK_TOKEN = "your-production-token"
+
+# For sensitive values, prefer `wrangler secret put` over [vars]:
+#   wrangler secret put SHA224PASS
+#   wrangler secret put PASSWORD
+#   wrangler secret put LINK_TOKEN
