@@ -10,134 +10,101 @@ const FALLBACK_PROXY_IPS = [
 const PROXY_IP_SOURCES = [
     'https://ipdb.api.030101.xyz/?type=proxy',
 ];
-const PROXY_IP_CACHE_TTL = 30 * 60 * 1000;
+const POOL_MIN = 30;
+const POOL_MAX = 200;
+const PROBE_CONCURRENCY = 20;
+const PROBE_TIMEOUT_MS = 2000;
 
-const PROXY_IP_REFRESH_MS = 10 * 60 * 1000;
+let _pool = [];
+let _refilling = null;
 
-let _proxyIPCache = null;
-let _proxyIPCacheExpiry = 0;
-let _proxyIPFetching = null;
+function getPool() {
+    return _pool.length > 0 ? _pool : FALLBACK_PROXY_IPS;
+}
 
-const _coldStartInit = _doFetchProxyIPs().then((valid) => {
-    if (valid.length > 0) {
-        _proxyIPCache = valid;
-        _proxyIPCacheExpiry = Date.now() + PROXY_IP_CACHE_TTL;
-        console.log(`[proxyip] cold start: ${valid.length} valid — ${valid.join(', ')}`);
-    }
-}).catch(() => {
-    _proxyIPCache = FALLBACK_PROXY_IPS;
-    _proxyIPCacheExpiry = Date.now() + PROXY_IP_CACHE_TTL;
-    console.log('[proxyip] cold start failed, using fallback');
-});
+async function healthCheck() {
+    if (_refilling) await _refilling;
+    if (_pool.length === 0) return;
+    const before = _pool.length;
+    _pool = await probeBatch(_pool);
+    console.log(`[pool] health check: ${_pool.length}/${before} alive`);
+}
 
-function _doFetchProxyIPs() {
+async function refill() {
+    if (_refilling) return _refilling;
+    _refilling = _doRefill().finally(() => { _refilling = null; });
+    return _refilling;
+}
+
+async function _doRefill() {
+    const raw = await fetchIPDB();
+    const existing = new Set(_pool);
+    const candidates = shuffle(raw.filter(ip => !existing.has(ip)));
+    const needed = POOL_MAX - _pool.length;
+    if (needed <= 0 || candidates.length === 0) return;
+    const alive = await probeBatch(candidates, needed);
+    const room = Math.max(0, POOL_MAX - _pool.length);
+    const toAdd = alive.slice(0, room);
+    _pool.push(...toAdd);
+    console.log(`[pool] refill: +${alive.length}, pool now ${_pool.length}`);
+}
+
+async function fetchIPDB() {
     return Promise.any(PROXY_IP_SOURCES.map(async (url) => {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 5000);
-        let rawIPs = [];
         try {
             const resp = await fetch(url, { signal: controller.signal });
-            if (resp.ok) {
-                const text = await resp.text();
-                rawIPs = text.trim().split('\n')
-                    .map(s => s.trim())
-                    .filter(s => s && !s.startsWith('#'));
-            }
-        } catch (e) {
-            if (e.name === 'AbortError') {
-                console.error(`[proxyip] fetch timeout: ${url}`);
-            } else {
-                console.error(`[proxyip] fetch error: ${e.message}`);
-            }
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const text = await resp.text();
+            const ips = text.trim().split('\n')
+                .map(s => s.trim())
+                .filter(s => s && !s.startsWith('#'));
+            if (ips.length === 0) throw new Error('source empty');
+            return [...new Set(ips)];
         } finally {
             clearTimeout(timer);
         }
-        if (rawIPs.length === 0) throw new Error(`source empty: ${url}`);
-
-        const pool = [...new Set(rawIPs)];
-        for (let i = pool.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [pool[i], pool[j]] = [pool[j], pool[i]];
-        }
-
-        const valid = [];
-        const maxValid = 10;
-        for (const addr of pool) {
-            const [host, portStr] = addr.includes(':') ? addr.split(':') : [addr, '443'];
-            const port = parseInt(portStr);
-            try {
-                const sock = connect({ hostname: host, port });
-                await Promise.race([
-                    sock.opened,
-                    new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 3000))
-                ]);
-                valid.push(addr);
-                sock.close();
-                if (valid.length >= maxValid) break;
-            } catch (_) {
-                // dead IP, skip
-            }
-        }
-
-        if (valid.length > 0) {
-            _proxyIPCache = valid;
-            _proxyIPCacheExpiry = Date.now() + PROXY_IP_CACHE_TTL;
-            console.log(`[proxyip] validated ${valid.length}/${maxValid}: ${valid.join(', ')} (${url})`);
-        } else {
-            console.error(`[proxyip] 0 valid after probing ${pool.length} IPs from ${url}`);
-            throw new Error(`0 valid from ${url}`);
-        }
-        return valid;
     }));
 }
 
-async function getProxyIPList(ctx) {
-    const now = Date.now();
-    if (_proxyIPCache && _proxyIPCache.length > 0 && now < _proxyIPCacheExpiry) {
-        const age = now - (_proxyIPCacheExpiry - PROXY_IP_CACHE_TTL);
-        if (age > PROXY_IP_REFRESH_MS && !_proxyIPFetching) {
-            triggerBackgroundRefresh(ctx);
-        }
-        return _proxyIPCache;
-    }
-    if (_coldStartInit) {
-        await _coldStartInit;
-        if (_proxyIPCache && _proxyIPCache.length > 0 && now < _proxyIPCacheExpiry) {
-            return _proxyIPCache;
-        }
-    }
-    if (!_proxyIPFetching) {
-        _proxyIPFetching = _doFetchProxyIPs().catch(() => {
-            if (!_proxyIPCache || _proxyIPCache.length === 0) {
-                _proxyIPCache = FALLBACK_PROXY_IPS;
-                _proxyIPCacheExpiry = Date.now() + PROXY_IP_CACHE_TTL;
+async function probeBatch(candidates, maxAlive = Infinity) {
+    const alive = [];
+    for (let i = 0; i < candidates.length && alive.length < maxAlive; i += PROBE_CONCURRENCY) {
+        const chunk = candidates.slice(i, i + PROBE_CONCURRENCY);
+        const results = await Promise.allSettled(chunk.map(addr => probeOne(addr)));
+        for (const r of results) {
+            if (r.status === 'fulfilled') {
+                alive.push(r.value);
+                if (alive.length >= maxAlive) break;
             }
-            return _proxyIPCache;
-        }).finally(() => {
-            _proxyIPFetching = null;
-        });
+        }
     }
-    return _proxyIPFetching;
+    return alive;
 }
 
-function triggerBackgroundRefresh(ctx) {
-    if (_proxyIPFetching) return;
-    _proxyIPFetching = _doFetchProxyIPs().then((valid) => {
-        if (valid.length > 0) {
-            _proxyIPCache = valid;
-            _proxyIPCacheExpiry = Date.now() + PROXY_IP_CACHE_TTL;
-        }
-        return valid;
-    }).catch(() => {
-        if (!_proxyIPCache || _proxyIPCache.length === 0) {
-            _proxyIPCache = FALLBACK_PROXY_IPS;
-            _proxyIPCacheExpiry = Date.now() + PROXY_IP_CACHE_TTL;
-        }
-        return _proxyIPCache;
-    }).finally(() => {
-        _proxyIPFetching = null;
-    });
-    if (ctx) ctx.waitUntil(_proxyIPFetching);
+async function probeOne(addr) {
+    const [host, portStr] = addr.includes(':') ? addr.split(':') : [addr, '443'];
+    const port = parseInt(portStr);
+    const sock = connect({ hostname: host, port });
+    try {
+        await Promise.race([
+            sock.opened,
+            new Promise((_, r) => setTimeout(() => r(new Error('timeout')), PROBE_TIMEOUT_MS))
+        ]);
+    } finally {
+        sock.close();
+    }
+    return addr;
+}
+
+function shuffle(arr) {
+    const a = [...arr];
+    for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
 }
 
 const textDecoder = new TextDecoder();
@@ -160,8 +127,11 @@ const worker_default = {
                 return new Response("Server configuration error", { status: 500 });
             }
             const configProxyIP = env.PROXYIP || DEFAULT_PROXYIP;
-            const proxyIPList = configProxyIP ? [] : await getProxyIPList(ctx);
-            const proxyIP = configProxyIP || proxyIPList[Math.floor(Math.random() * proxyIPList.length)];
+            const pool = configProxyIP ? [] : getPool();
+            const proxyIP = configProxyIP || pool[Math.floor(Math.random() * pool.length)];
+            if (!configProxyIP && _pool.length === 0 && !_refilling) {
+                ctx.waitUntil(refill());
+            }
             const proxyPort = env.PROXYPORT ? parseInt(env.PROXYPORT) : null;
             const cleartextPassword = env.PASSWORD || DEFAULT_PASSWORD;
             const upgradeHeader = request.headers.get("Upgrade");
@@ -195,8 +165,17 @@ const worker_default = {
     },
 
     async scheduled(controller, env, ctx) {
-        console.log('[proxyip] cron refresh start');
-        triggerBackgroundRefresh(ctx);
+        try {
+            console.log('[pool] cron: health check');
+            await healthCheck();
+            if (_pool.length < POOL_MIN) {
+                console.log(`[pool] cron: pool at ${_pool.length}, refilling`);
+                await refill();
+            }
+            console.log(`[pool] cron: done, pool size ${_pool.length}`);
+        } catch (e) {
+            console.error(`[pool] cron error:`, e);
+        }
     }
 };
 
@@ -368,7 +347,7 @@ async function handleTCPOutBound(remoteSocket, addressRemote, portRemote, rawCli
         await remoteSocketToWS(tcpSocket, webSocket, null, log);
     }
     async function retry() {
-        const pool = (_proxyIPCache && _proxyIPCache.length > 0) ? _proxyIPCache : FALLBACK_PROXY_IPS;
+        const pool = getPool();
         const tried = new Set();
         const candidates = [];
         if (proxyIP && proxyIP !== addressRemote) {

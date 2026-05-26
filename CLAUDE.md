@@ -33,11 +33,23 @@ Client (Trojan over WSS)
 
 ### Key Functions
 
-- `fetch()` — Entry point. Per-request config from `env` (no mutable globals). Routes WebSocket upgrades vs `/link` endpoint.
-- `parseTrojanHeader(buffer, sha224Password)` — Parses Trojan wire format: SHA224(56 bytes) + CRLF + SOCKS5 request. Includes boundary validation for IPv4/domain/IPv6 addresses.
-- `handleTCPOutBound()` — Establishes TCP connection, retries via `proxyIP` if no data received. Awaits `tcpSocket.opened` before writing.
+- `fetch()` — Entry point. Per-request config from `env`. Routes WebSocket upgrades vs `/link` endpoint. Reads pool synchronously via `getPool()`, triggers non-blocking refill if pool empty.
+- `scheduled()` — Cron handler (every 10 min). Runs `healthCheck()` (probe all pool IPs, prune dead), then `refill()` if pool < 30.
+- `getPool()` — Returns healthy IP pool or `FALLBACK_PROXY_IPS`. Synchronous, zero blocking.
+- `healthCheck()` — Probes all pool IPs concurrently (20 at a time, 2s timeout), removes dead ones.
+- `refill()` — Fetches fresh IPs from IPDB, probes candidates, adds alive ones until pool reaches 200. Single-flight via `_refilling` lock.
+- `parseTrojanHeader(buffer, sha224Password)` — Parses Trojan wire format: SHA224(56 bytes) + CRLF + SOCKS5 request.
+- `handleTCPOutBound()` — Establishes TCP connection, retries via proxy pool if no data received.
 - `remoteSocketToWS()` — Forwards remote TCP data to WebSocket. Retry logic runs before WebSocket close.
 - `timingSafeEqual()` — Constant-time string comparison for password verification.
+
+### Proxy IP Pool
+
+Pool-health-driven model (no TTL, no cache expiry):
+- Pool target: 30–200 healthy IPs
+- Cron (every 10 min): health check all → prune dead → refill from IPDB if pool < 30
+- Request time: `getPool()` reads pool synchronously, random pick, zero blocking
+- Cold start: fallback IPs until first refill completes
 
 ### Environment Variables
 
