@@ -25,7 +25,9 @@ const _coldStartInit = _doFetchProxyIPs().then((valid) => {
         console.log(`[proxyip] cold start: ${valid.length} valid — ${valid.join(', ')}`);
     }
 }).catch(() => {
-    console.log('[proxyip] cold start init failed, deferring to first request');
+    _proxyIPCache = FALLBACK_PROXY_IPS;
+    _proxyIPCacheExpiry = Date.now() + PROXY_IP_CACHE_TTL;
+    console.log('[proxyip] cold start failed, using fallback');
 });
 
 function _doFetchProxyIPs() {
@@ -52,7 +54,7 @@ function _doFetchProxyIPs() {
         }
         if (rawIPs.length === 0) throw new Error(`source empty: ${url}`);
 
-        const pool = [...rawIPs];
+        const pool = [...new Set(rawIPs)];
         for (let i = pool.length - 1; i > 0; i--) {
             const j = Math.floor(Math.random() * (i + 1));
             [pool[i], pool[j]] = [pool[j], pool[i]];
@@ -344,9 +346,10 @@ async function parseTrojanHeader(buffer, sha224Password) {
 async function handleTCPOutBound(remoteSocket, addressRemote, portRemote, rawClientData, webSocket, proxyIP, proxyPort, log) {
     async function connectAndWrite(address, port) {
         const tcpSocket = connect({ hostname: address, port });
+        log(`connecting to ${address}:${port}`);
+        await tcpSocket.opened;
         remoteSocket.value = tcpSocket;
         log(`connected to ${address}:${port}`);
-        await tcpSocket.opened;
         const writer = tcpSocket.writable.getWriter();
         try {
             await writer.write(rawClientData);
@@ -366,14 +369,19 @@ async function handleTCPOutBound(remoteSocket, addressRemote, portRemote, rawCli
     }
     async function retry() {
         const pool = (_proxyIPCache && _proxyIPCache.length > 0) ? _proxyIPCache : FALLBACK_PROXY_IPS;
-        const maxRetries = 3;
         const tried = new Set();
-        const candidates = proxyIP && proxyIP !== addressRemote ? [proxyIP] : [];
-        for (let i = 0; i < maxRetries && tried.size < pool.length; i++) {
-            let idx;
-            do { idx = Math.floor(Math.random() * pool.length); } while (tried.has(idx));
-            tried.add(idx);
-            candidates.push(pool[idx]);
+        const candidates = [];
+        if (proxyIP && proxyIP !== addressRemote) {
+            candidates.push(proxyIP);
+            tried.add(proxyIP.includes(':') ? proxyIP.split(':')[0] : proxyIP);
+        }
+        for (let i = 0; i < 50 && candidates.length < 4 && tried.size < pool.length; i++) {
+            const addr = pool[Math.floor(Math.random() * pool.length)];
+            const key = addr.includes(':') ? addr.split(':')[0] : addr;
+            if (!tried.has(key)) {
+                tried.add(key);
+                candidates.push(addr);
+            }
         }
         for (const addr of candidates) {
             const [host, portStr] = addr.includes(':') ? addr.split(':') : [addr, null];
