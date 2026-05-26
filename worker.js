@@ -3,21 +3,47 @@ import { connect } from "cloudflare:sockets";
 const DEFAULT_SHA224_PASS = '08f32643dbdacf81d0d511f1ee24b06de759e90f8edf742bbdc57d88';
 const DEFAULT_PASSWORD = 'ca110us';
 const DEFAULT_PROXYIP = '';
-const PROXY_IPS = [
-    'yg1.ygkkk.dpdns.org',
-    'yg2.ygkkk.dpdns.org',
-    'yg3.ygkkk.dpdns.org',
-    'yg4.ygkkk.dpdns.org',
-    'yg5.ygkkk.dpdns.org',
-    'yg6.ygkkk.dpdns.org',
-    'yg7.ygkkk.dpdns.org',
-    'yg8.ygkkk.dpdns.org',
-    'yg9.ygkkk.dpdns.org',
-    'yg10.ygkkk.dpdns.org',
-    'yg11.ygkkk.dpdns.org',
-    'cloudflare-ech.com',
-    'cf.090227.xyz'
+const FALLBACK_PROXY_IPS = [
+    '8.212.12.98',
+    '47.242.218.87',
+    '8.219.245.214',
 ];
+const PROXY_IP_SOURCES = [
+    'https://ipdb.api.030101.xyz/?type=bestproxy',
+];
+const PROXY_IP_CACHE_TTL = 30 * 60 * 1000;
+
+let _proxyIPCache = null;
+let _proxyIPCacheExpiry = 0;
+
+async function getProxyIPList() {
+    const now = Date.now();
+    if (_proxyIPCache && _proxyIPCache.length > 0 && now < _proxyIPCacheExpiry) {
+        return _proxyIPCache;
+    }
+    for (const url of PROXY_IP_SOURCES) {
+        try {
+            const resp = await fetch(url);
+            if (resp.ok) {
+                const text = await resp.text();
+                const ips = text.trim().split('\n')
+                    .map(s => s.trim())
+                    .filter(s => s && !s.startsWith('#'));
+                if (ips.length > 0) {
+                    _proxyIPCache = ips;
+                    _proxyIPCacheExpiry = now + PROXY_IP_CACHE_TTL;
+                    console.log(`[proxyip] refreshed: ${ips.length} IPs from ${url}`);
+                    return ips;
+                }
+            }
+        } catch (e) {
+            console.error(`[proxyip] fetch error: ${e.message}`);
+        }
+    }
+    const fallback = _proxyIPCache && _proxyIPCache.length > 0 ? _proxyIPCache : FALLBACK_PROXY_IPS;
+    return fallback;
+}
+
 const textDecoder = new TextDecoder();
 
 if (!isValidSHA224(DEFAULT_SHA224_PASS)) {
@@ -38,7 +64,8 @@ const worker_default = {
                 return new Response("Server configuration error", { status: 500 });
             }
             const configProxyIP = env.PROXYIP || DEFAULT_PROXYIP;
-            const proxyIP = configProxyIP || PROXY_IPS[Math.floor(Math.random() * PROXY_IPS.length)];
+            const proxyIPList = await getProxyIPList();
+            const proxyIP = configProxyIP || proxyIPList[Math.floor(Math.random() * proxyIPList.length)];
             const proxyPort = env.PROXYPORT ? parseInt(env.PROXYPORT) : null;
             const cleartextPassword = env.PASSWORD || DEFAULT_PASSWORD;
             const upgradeHeader = request.headers.get("Upgrade");
