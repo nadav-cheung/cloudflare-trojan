@@ -6,7 +6,7 @@
 
 客户端通过 WSS（WebSocket over TLS）连接到此 Worker → Worker 验证 SHA224 密码 → Worker 解析 SOCKS5 目标地址 → Worker 通过 `cloudflare:sockets` 建立 TCP 出站连接 → 数据透传。
 
-[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/你的用户名/cloudflare-trojan)
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/nadav-cheung/cloudflare-trojan)
 
 ## 前提条件
 
