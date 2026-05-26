@@ -287,8 +287,13 @@ async function handleTCPOutBound(remoteSocket, addressRemote, portRemote, rawCli
         });
         await remoteSocketToWS(tcpSocket, webSocket, null, log);
     }
-    const tcpSocket = await connectAndWrite(addressRemote, portRemote);
-    await remoteSocketToWS(tcpSocket, webSocket, retry, log);
+    try {
+        const tcpSocket = await connectAndWrite(addressRemote, portRemote);
+        await remoteSocketToWS(tcpSocket, webSocket, retry, log);
+    } catch (e) {
+        log(`direct connect failed: ${e.message}, retrying via proxy`);
+        await retry();
+    }
 }
 
 function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) {
