@@ -69,8 +69,8 @@ function _doFetchProxyIPs() {
                     sock.opened,
                     new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 3000))
                 ]);
-                sock.close();
                 valid.push(addr);
+                sock.close();
                 if (valid.length >= maxValid) break;
             } catch (_) {
                 // dead IP, skip
@@ -106,7 +106,11 @@ async function getProxyIPList(ctx) {
     }
     if (!_proxyIPFetching) {
         _proxyIPFetching = _doFetchProxyIPs().catch(() => {
-            return _proxyIPCache && _proxyIPCache.length > 0 ? _proxyIPCache : FALLBACK_PROXY_IPS;
+            if (!_proxyIPCache || _proxyIPCache.length === 0) {
+                _proxyIPCache = FALLBACK_PROXY_IPS;
+                _proxyIPCacheExpiry = Date.now() + PROXY_IP_CACHE_TTL;
+            }
+            return _proxyIPCache;
         }).finally(() => {
             _proxyIPFetching = null;
         });
@@ -123,7 +127,11 @@ function triggerBackgroundRefresh(ctx) {
         }
         return valid;
     }).catch(() => {
-        return _proxyIPCache || FALLBACK_PROXY_IPS;
+        if (!_proxyIPCache || _proxyIPCache.length === 0) {
+            _proxyIPCache = FALLBACK_PROXY_IPS;
+            _proxyIPCacheExpiry = Date.now() + PROXY_IP_CACHE_TTL;
+        }
+        return _proxyIPCache;
     }).finally(() => {
         _proxyIPFetching = null;
     });
@@ -150,7 +158,7 @@ const worker_default = {
                 return new Response("Server configuration error", { status: 500 });
             }
             const configProxyIP = env.PROXYIP || DEFAULT_PROXYIP;
-            const proxyIPList = await getProxyIPList(ctx);
+            const proxyIPList = configProxyIP ? [] : await getProxyIPList(ctx);
             const proxyIP = configProxyIP || proxyIPList[Math.floor(Math.random() * proxyIPList.length)];
             const proxyPort = env.PROXYPORT ? parseInt(env.PROXYPORT) : null;
             const cleartextPassword = env.PASSWORD || DEFAULT_PASSWORD;
