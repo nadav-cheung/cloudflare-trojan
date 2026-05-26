@@ -1,140 +1,142 @@
 # cloudflare-trojan
 
-基于 Cloudflare Workers 的 Trojan 代理，通过 WebSocket 隧道传输 TLS 流量。
+A Trojan-protocol proxy running on Cloudflare Workers, tunneling TCP traffic over WebSocket + TLS.
 
 [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/nadav-cheung/cloudflare-trojan)
 
-## 工作原理
+[中文文档](README_CN.md)
 
-客户端通过 WSS（WebSocket over TLS）连接到此 Worker → Worker 验证 SHA224 密码 → Worker 解析 SOCKS5 目标地址 → Worker 通过 `cloudflare:sockets` 建立 TCP 出站连接 → 数据透传。
+## How It Works
 
-## 前提条件
+Client connects via WSS (WebSocket over TLS) → Worker authenticates via SHA224 password hash → Worker parses SOCKS5 destination address → Worker establishes TCP outbound via `cloudflare:sockets` → Data is transparently forwarded.
 
-- Cloudflare Workers **付费计划**（`cloudflare:sockets` 的 `connect()` API 需要）
-- 域名已添加到 Cloudflare 并启用 DNS 代理（橙色云图标）
+## Prerequisites
 
-## 快速开始
+- Cloudflare Workers **paid plan** (required for `cloudflare:sockets` `connect()` API)
+- A domain added to Cloudflare with DNS proxy enabled (orange cloud icon)
 
-### 方式一：一键部署
+## Quick Start
 
-点击上方 **Deploy to Cloudflare Workers** 按钮，在 Cloudflare Dashboard 中完成部署。
+### Option 1: One-Click Deploy
 
-### 方式二：命令行部署
+Click the **Deploy to Cloudflare Workers** button above to deploy via the Cloudflare Dashboard.
+
+### Option 2: CLI Deploy
 
 ```bash
-# 1. 安装 Wrangler CLI
+# 1. Install Wrangler CLI
 npm install -g wrangler
 
-# 2. 登录 Cloudflare 账户
+# 2. Login to Cloudflare
 wrangler login
 
-# 3. 克隆仓库
+# 3. Clone the repo
 git clone https://github.com/nadav-cheung/cloudflare-trojan.git
 cd cloudflare-trojan
 
-# 4. 生成你自己的密码哈希
-echo -n "你的密码" | sha224sum
-# 输出类似: 08f32643dbdacf81d0d511f1ee24b06de759e90f8edf742bbdc57d88
+# 4. Generate your own password hash
+echo -n "your-password" | sha224sum
+# Output similar to: 08f32643dbdacf81d0d511f1ee24b06de759e90f8edf742bbdc57d88
 
-# 5. 配置密码（二选一）
-#    方式 A：编辑 wrangler.toml 中的 vars（适合测试，会提交到 git）
-#    方式 B：使用 secret（推荐，不会入库）
+# 5. Configure password (choose one)
+#    Option A: Edit vars in wrangler.toml (for testing, will be committed to git)
+#    Option B: Use secrets (recommended, not stored in repo)
 wrangler secret put SHA224PASS
 wrangler secret put PASSWORD
 
-# 6. 部署
+# 6. Deploy
 wrangler deploy
 ```
 
-部署成功后输出类似：
+After successful deployment:
 ```
 Published worker-trojan (x.xx sec)
-  https://worker-trojan.你的用户名.workers.dev
+  https://worker-trojan.your-username.workers.dev
 ```
 
-### 绑定自定义域名（可选）
+### Bind Custom Domain (Optional)
 
-1. 进入 Cloudflare Dashboard → Workers & Pages → `worker-trojan`
+1. Go to Cloudflare Dashboard → Workers & Pages → `worker-trojan`
 2. Settings → Domains & Routes → Add → Custom Domain
-3. 输入你的域名（必须已在 Cloudflare 管理）
-4. 等待 DNS 生效（通常几秒）
+3. Enter your domain (must already be managed by Cloudflare)
+4. Wait for DNS to propagate (usually a few seconds)
 
-## 使用方法
+## Usage
 
-### 获取 Trojan 链接
+### Get Trojan Link
 
-部署后访问以下地址获取配置链接，可直接导入客户端：
+After deployment, visit the following URL to get a configuration link for client import:
 
 ```bash
-# 如果设置了 LINK_TOKEN
-curl https://你的域名/link?token=你的令牌
+# If LINK_TOKEN is set
+curl https://your-domain/link?token=your-token
 
-# 如果未设置 LINK_TOKEN
-curl https://你的域名/link
+# If LINK_TOKEN is not set
+curl https://your-domain/link
 ```
 
-返回内容类似：
+Response example:
 ```
-trojan://ca110us@你的域名:443/?type=ws&host=你的域名&security=tls
+trojan://ca110us@your-domain:443/?type=ws&host=your-domain&security=tls
 ```
 
-### 客户端配置
+### Client Configuration
 
-将上述链接导入 Trojan 客户端，或手动填写：
+Import the link above into a Trojan client, or manually configure:
 
-| 字段 | 值 |
-|------|----|
-| 类型 | Trojan |
-| 地址 | 你的域名 |
-| 端口 | 443 |
-| 密码 | 你的明文密码 |
-| 传输方式 | ws (WebSocket) |
-| TLS | 开启 |
-| SNI / WS Host | 你的域名 |
-| 路径 | / |
+| Field | Value |
+|-------|-------|
+| Type | Trojan |
+| Address | your-domain |
+| Port | 443 |
+| Password | your-cleartext-password |
+| Transport | ws (WebSocket) |
+| TLS | Enabled |
+| SNI / WS Host | your-domain |
+| Path | / |
 
-### 推荐客户端
+### Recommended Clients
 
-| 平台 | 客户端 |
-|------|--------|
-| Windows | v2rayN、Clash Verge |
-| macOS | Clash Verge、V2rayU |
-| iOS | Shadowrocket、Stash |
-| Android | v2rayNG、Clash Meta |
+| Platform | Client |
+|----------|--------|
+| Windows | v2rayN, Clash Verge |
+| macOS | Clash Verge, V2rayU |
+| iOS | Shadowrocket, Stash |
+| Android | v2rayNG, Clash Meta |
 
-导入链接后连接即可使用，无需额外设置。
+Import the link and connect — no additional setup required.
 
-## 环境变量
+## Environment Variables
 
-| 变量 | 必需 | 说明 | 默认值 |
-|------|------|------|--------|
-| `SHA224PASS` | 是 | 密码的 SHA224 哈希值（56位十六进制） | 内置默认 |
-| `PASSWORD` | 否 | 明文密码（用于 `/link` 生成 URL） | `ca110us` |
-| `PROXYIP` | 否 | 后备代理 IP，直连失败时使用 | 空（直连） |
-| `LINK_TOKEN` | 否 | 设置后 `/link` 端点需带 `?token=` 参数 | 未设置则公开 |
+| Variable | Required | Description | Default |
+|----------|----------|-------------|---------|
+| `SHA224PASS` | Yes | SHA224 hash of the password (56 hex characters) | Built-in default |
+| `PASSWORD` | No | Cleartext password (for `/link` URL generation) | `ca110us` |
+| `PROXYIP` | No | Fallback proxy IP, used when direct connection fails | Empty (direct) |
+| `LINK_TOKEN` | No | When set, `/link` endpoint requires `?token=` parameter | Public if unset |
 
-> 敏感值推荐使用 `wrangler secret put` 而非写入 `wrangler.toml`。
+> For sensitive values, prefer `wrangler secret put` over writing them in `wrangler.toml`.
 
-## 常见问题
+## Troubleshooting
 
-**连接失败？**
-- 确认 Workers 付费计划已生效（免费计划不支持 `cloudflare:sockets`）
-- 确认域名 DNS 代理已开启（橙色云图标，非灰色）
-- 确认客户端密码与 `SHA224PASS` 对应的明文一致
-- 查看日志：`wrangler tail`
+**Connection failed?**
+- Verify Workers paid plan is active (free plan does not support `cloudflare:sockets`)
+- Verify domain DNS proxy is enabled (orange cloud icon, not grey)
+- Verify client password matches the plaintext corresponding to `SHA224PASS`
+- Check logs: `wrangler tail`
 
-**直连某些网站不通？**
-- 设置 `PROXYIP` 为一个中间代理 IP，Worker 会在直连失败时自动回退
+**Direct connection to some sites not working?**
+- Set `PROXYIP` to an intermediate proxy IP — the Worker will automatically fall back when direct connection fails
 
-**如何更换密码？**
+**How to change password?**
 ```bash
-# 生成新哈希
-echo -n "新密码" | sha224sum
+# Generate new hash
+echo -n "new-password" | sha224sum
 
-# 更新 secret
+# Update secrets
 wrangler secret put SHA224PASS
 wrangler secret put PASSWORD
 
-# 重新获取链接
-curl https://你的域名/link
+# Get new link
+curl https://your-domain/link
 ```
