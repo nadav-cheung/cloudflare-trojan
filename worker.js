@@ -3,6 +3,11 @@ import { connect } from "cloudflare:sockets";
 const DEFAULT_SHA224_PASS = '08f32643dbdacf81d0d511f1ee24b06de759e90f8edf742bbdc57d88';
 const DEFAULT_PASSWORD = 'ca110us';
 const DEFAULT_PROXYIP = '';
+const PROXY_IPS = [
+    'cdn.xn--b6gac.eu.org',
+    'cdn-all.xn--b6gac.eu.org',
+    'workers.bestip.one'
+];
 const textDecoder = new TextDecoder();
 
 if (!isValidSHA224(DEFAULT_SHA224_PASS)) {
@@ -22,7 +27,8 @@ const worker_default = {
             if (env.SHA224PASS && !isValidSHA224(env.SHA224PASS)) {
                 return new Response("Server configuration error", { status: 500 });
             }
-            const proxyIP = env.PROXYIP || DEFAULT_PROXYIP;
+            const configProxyIP = env.PROXYIP || DEFAULT_PROXYIP;
+            const proxyIP = configProxyIP || PROXY_IPS[Math.floor(Math.random() * PROXY_IPS.length)];
             const proxyPort = env.PROXYPORT ? parseInt(env.PROXYPORT) : null;
             const cleartextPassword = env.PASSWORD || DEFAULT_PASSWORD;
             const upgradeHeader = request.headers.get("Upgrade");
