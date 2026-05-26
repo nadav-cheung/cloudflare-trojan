@@ -9,6 +9,7 @@ const FALLBACK_PROXY_IPS = [
 ];
 const PROXY_IP_SOURCES = [
     'https://ipdb.api.030101.xyz/?type=proxy',
+    'https://ipdb.api.030101.xyz/?type=bestproxy',
 ];
 const POOL_MIN = 30;
 const POOL_MAX = 200;
