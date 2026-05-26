@@ -128,7 +128,11 @@ const worker_default = {
             }
             const configProxyIP = env.PROXYIP || DEFAULT_PROXYIP;
             if (!configProxyIP && _pool.length === 0) {
-                await refill();
+                try {
+                    await refill();
+                } catch (e) {
+                    console.error('[pool] cold start refill failed:', e);
+                }
             }
             const pool = configProxyIP ? [] : getPool();
             const proxyIP = configProxyIP || pool[Math.floor(Math.random() * pool.length)];
