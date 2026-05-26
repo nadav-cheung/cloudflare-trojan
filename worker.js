@@ -51,7 +51,7 @@ async function _doRefill() {
 }
 
 async function fetchIPDB() {
-    return Promise.any(PROXY_IP_SOURCES.map(async (url) => {
+    const results = await Promise.allSettled(PROXY_IP_SOURCES.map(async (url) => {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 5000);
         try {
@@ -62,11 +62,17 @@ async function fetchIPDB() {
                 .map(s => s.trim())
                 .filter(s => s && !s.startsWith('#'));
             if (ips.length === 0) throw new Error('source empty');
-            return [...new Set(ips)];
+            return ips;
         } finally {
             clearTimeout(timer);
         }
     }));
+    const all = [];
+    for (const r of results) {
+        if (r.status === 'fulfilled') all.push(...r.value);
+    }
+    if (all.length === 0) throw new Error('all sources empty');
+    return [...new Set(all)];
 }
 
 async function probeBatch(candidates, maxAlive = Infinity) {
