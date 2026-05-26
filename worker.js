@@ -162,6 +162,16 @@ const worker_default = {
             if (!upgradeHeader || upgradeHeader.toLowerCase() !== "websocket") {
                 const url = new URL(request.url);
                 switch (url.pathname) {
+                    case "/pool": {
+                        const linkToken = env.LINK_TOKEN;
+                        if (linkToken && url.searchParams.get('token') !== linkToken) {
+                            return new Response("404 Not found", { status: 404 });
+                        }
+                        return new Response(
+                            JSON.stringify({ pool: _pool, fallback: FALLBACK_PROXY_IPS }, null, 2),
+                            { status: 200, headers: { "Content-Type": "application/json" } }
+                        );
+                    }
                     case "/link": {
                         const linkToken = env.LINK_TOKEN;
                         if (linkToken && url.searchParams.get('token') !== linkToken) {
