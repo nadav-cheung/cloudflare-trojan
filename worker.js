@@ -6,7 +6,6 @@ const DEFAULT_PROXYIP = '';
 const FALLBACK_PROXY_IPS = [
     '64.110.104.30',
     '144.24.140.37',
-    '8.212.12.98',
 ];
 const PROXY_IP_SOURCES = [
     'https://ipdb.api.030101.xyz/?type=proxy',
