@@ -15,15 +15,14 @@ const PROXY_IP_CACHE_TTL = 30 * 60 * 1000;
 
 let _proxyIPCache = null;
 let _proxyIPCacheExpiry = 0;
+let _proxyIPFetching = null;
 
-async function getProxyIPList() {
-    const now = Date.now();
-    if (_proxyIPCache && _proxyIPCache.length > 0 && now < _proxyIPCacheExpiry) {
-        return _proxyIPCache;
-    }
-    for (const url of PROXY_IP_SOURCES) {
+function _doFetchProxyIPs() {
+    return Promise.any(PROXY_IP_SOURCES.map(async (url) => {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 5000);
         try {
-            const resp = await fetch(url);
+            const resp = await fetch(url, { signal: controller.signal });
             if (resp.ok) {
                 const text = await resp.text();
                 const ips = text.trim().split('\n')
@@ -31,17 +30,37 @@ async function getProxyIPList() {
                     .filter(s => s && !s.startsWith('#'));
                 if (ips.length > 0) {
                     _proxyIPCache = ips;
-                    _proxyIPCacheExpiry = now + PROXY_IP_CACHE_TTL;
+                    _proxyIPCacheExpiry = Date.now() + PROXY_IP_CACHE_TTL;
                     console.log(`[proxyip] refreshed: ${ips.length} IPs from ${url}`);
                     return ips;
                 }
             }
         } catch (e) {
-            console.error(`[proxyip] fetch error: ${e.message}`);
+            if (e.name === 'AbortError') {
+                console.error(`[proxyip] timeout: ${url}`);
+            } else {
+                console.error(`[proxyip] fetch error: ${e.message}`);
+            }
+        } finally {
+            clearTimeout(timer);
         }
+        throw new Error(`source failed: ${url}`);
+    }));
+}
+
+async function getProxyIPList() {
+    const now = Date.now();
+    if (_proxyIPCache && _proxyIPCache.length > 0 && now < _proxyIPCacheExpiry) {
+        return _proxyIPCache;
     }
-    const fallback = _proxyIPCache && _proxyIPCache.length > 0 ? _proxyIPCache : FALLBACK_PROXY_IPS;
-    return fallback;
+    if (!_proxyIPFetching) {
+        _proxyIPFetching = _doFetchProxyIPs().catch(() => {
+            return _proxyIPCache && _proxyIPCache.length > 0 ? _proxyIPCache : FALLBACK_PROXY_IPS;
+        }).finally(() => {
+            _proxyIPFetching = null;
+        });
+    }
+    return _proxyIPFetching;
 }
 
 const textDecoder = new TextDecoder();
