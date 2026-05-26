@@ -21,3 +21,18 @@ PROXYIP = ""
 #   wrangler secret put SHA224PASS
 #   wrangler secret put PASSWORD
 #   wrangler secret put LINK_TOKEN
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[observability.logs]
+enabled = true
+head_sampling_rate = 1
+persist = true
+invocation_logs = true
+
+[observability.traces]
+enabled = true
+persist = true
+head_sampling_rate = 1
