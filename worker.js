@@ -56,7 +56,10 @@ function _doFetchProxyIPs() {
             const port = parseInt(portStr);
             try {
                 const sock = connect({ hostname: host, port });
-                await sock.opened;
+                await Promise.race([
+                    sock.opened,
+                    new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 3000))
+                ]);
                 sock.close();
                 valid.push(addr);
                 if (valid.length >= maxValid) break;
@@ -68,9 +71,10 @@ function _doFetchProxyIPs() {
         if (valid.length > 0) {
             _proxyIPCache = valid;
             _proxyIPCacheExpiry = Date.now() + PROXY_IP_CACHE_TTL;
-            console.log(`[proxyip] validated ${valid.length}/${maxValid} after probing ${rawIPs.length} total (${url})`);
+            console.log(`[proxyip] validated ${valid.length}/${maxValid} after probing ${pool.length} total (${url})`);
         } else {
-            console.error(`[proxyip] 0 valid after probing ${rawIPs.length} IPs from ${url}`);
+            console.error(`[proxyip] 0 valid after probing ${pool.length} IPs from ${url}`);
+            throw new Error(`0 valid from ${url}`);
         }
         return valid;
     }));
@@ -165,15 +169,8 @@ const worker_default = {
     },
 
     async scheduled(controller, env, ctx) {
-        ctx.waitUntil((async () => {
-            console.log('[proxyip] cron refresh start');
-            const valid = await _doFetchProxyIPs().catch(() => []);
-            if (valid.length > 0) {
-                _proxyIPCache = valid;
-                _proxyIPCacheExpiry = Date.now() + PROXY_IP_CACHE_TTL;
-            }
-            console.log(`[proxyip] cron refresh done: ${valid.length} valid`);
-        })());
+        console.log('[proxyip] cron refresh start');
+        triggerBackgroundRefresh(ctx);
     }
 };
 
