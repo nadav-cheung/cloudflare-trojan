@@ -115,6 +115,7 @@ async function getProxyIPList(ctx) {
 }
 
 function triggerBackgroundRefresh(ctx) {
+    if (_proxyIPFetching) return;
     _proxyIPFetching = _doFetchProxyIPs().then((valid) => {
         if (valid.length > 0) {
             _proxyIPCache = valid;
