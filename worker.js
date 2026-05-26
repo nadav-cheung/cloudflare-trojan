@@ -43,19 +43,15 @@ function _doFetchProxyIPs() {
         }
         if (rawIPs.length === 0) throw new Error(`source empty: ${url}`);
 
-        const sample = [];
-        const used = new Set();
-        const maxSample = Math.min(10, rawIPs.length);
-        while (sample.length < maxSample) {
-            const idx = Math.floor(Math.random() * rawIPs.length);
-            if (!used.has(idx)) {
-                used.add(idx);
-                sample.push(rawIPs[idx]);
-            }
+        const pool = [...rawIPs];
+        for (let i = pool.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [pool[i], pool[j]] = [pool[j], pool[i]];
         }
 
         const valid = [];
-        for (const addr of sample) {
+        const maxValid = 10;
+        for (const addr of pool) {
             const [host, portStr] = addr.includes(':') ? addr.split(':') : [addr, '443'];
             const port = parseInt(portStr);
             try {
@@ -63,6 +59,7 @@ function _doFetchProxyIPs() {
                 await sock.opened;
                 sock.close();
                 valid.push(addr);
+                if (valid.length >= maxValid) break;
             } catch (_) {
                 // dead IP, skip
             }
@@ -71,9 +68,9 @@ function _doFetchProxyIPs() {
         if (valid.length > 0) {
             _proxyIPCache = valid;
             _proxyIPCacheExpiry = Date.now() + PROXY_IP_CACHE_TTL;
-            console.log(`[proxyip] validated ${valid.length}/${maxSample} from ${rawIPs.length} total (${url})`);
+            console.log(`[proxyip] validated ${valid.length}/${maxValid} after probing ${rawIPs.length} total (${url})`);
         } else {
-            console.error(`[proxyip] 0/${maxSample} valid from ${url}`);
+            console.error(`[proxyip] 0 valid after probing ${rawIPs.length} IPs from ${url}`);
         }
         return valid;
     }));
