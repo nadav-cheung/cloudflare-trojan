@@ -47,11 +47,12 @@ async function _doRefill() {
     const candidates = shuffle(raw.filter(ip => !existing.has(ip)));
     const needed = POOL_MAX - _pool.length;
     if (needed <= 0 || candidates.length === 0) return;
+    console.log(`[pool] refill: probing ${candidates.length} candidates (need ${needed})`);
     const alive = await probeBatch(candidates, needed);
     const room = Math.max(0, POOL_MAX - _pool.length);
     const toAdd = alive.slice(0, room);
     _pool.push(...toAdd);
-    console.log(`[pool] refill: +${alive.length}, pool now ${_pool.length}`);
+    console.log(`[pool] refill: probed ${candidates.length}, alive ${alive.length}, added ${toAdd.length}, pool now ${_pool.length}`);
 }
 
 async function fetchIPDB() {
@@ -66,16 +67,23 @@ async function fetchIPDB() {
                 .map(s => s.trim())
                 .filter(s => s && !s.startsWith('#'));
             if (ips.length === 0) throw new Error('source empty');
+            console.log(`[ipdb] ${new URL(url).search}: ${ips.length} IPs`);
             return ips;
+        } catch (e) {
+            console.log(`[ipdb] ${new URL(url).search}: failed - ${e.message}`);
         } finally {
             clearTimeout(timer);
         }
     }));
     const all = [];
     for (const r of results) {
-        if (r.status === 'fulfilled') all.push(...r.value);
+        if (r.status === 'fulfilled' && r.value) all.push(...r.value);
     }
-    if (all.length === 0) return await resolveDoH();
+    console.log(`[ipdb] total: ${all.length} unique: ${new Set(all).size}`);
+    if (all.length === 0) {
+        console.log(`[ipdb] all sources failed, falling back to DoH`);
+        return await resolveDoH();
+    }
     return [...new Set(all)];
 }
 
