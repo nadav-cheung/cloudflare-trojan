@@ -1,0 +1,54 @@
+# cloudflare-trojan
+
+基于 Cloudflare Workers 的 Trojan 代理，通过 WebSocket 隧道传输 TLS 流量。
+
+## 工作原理
+
+客户端通过 WSS（WebSocket over TLS）连接到此 Worker → Worker 验证 SHA224 密码 → Worker 解析 SOCKS5 目标地址 → Worker 通过 `cloudflare:sockets` 建立 TCP 出站连接 → 数据透传。
+
+[![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/你的用户名/cloudflare-trojan)
+
+## 前提条件
+
+- Cloudflare Workers **付费计划**（`cloudflare:sockets` 的 `connect()` API 需要）
+- 域名已添加到 Cloudflare 并启用 DNS 代理
+
+## 部署
+
+```bash
+npm install -g wrangler
+
+# 登录
+wrangler login
+
+# 设置密码和后备代理 IP
+# 编辑 wrangler.toml 中的 vars：
+#   SHA224PASS - 你的 SHA224 哈希密码
+#   PROXYIP    - （可选）后备代理 IP
+
+# 部署
+wrangler deploy
+```
+
+## 生成 SHA224 密码
+
+```bash
+echo -n "你的密码" | sha224sum
+```
+
+## 客户端配置
+
+部署后，访问 `https://你的域名/link` 获取 Trojan 链接，可直接导入兼容客户端。
+
+或手动配置：
+
+```
+类型:     Trojan
+地址:     你的域名
+端口:     443
+密码:     08f32643dbdacf81d0d511f1ee24b06de759e90f8edf742bbdc57d88
+传输:     ws
+TLS:      开启
+WS 主机:  你的域名
+路径:     /
+```
