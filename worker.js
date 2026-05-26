@@ -127,11 +127,11 @@ const worker_default = {
                 return new Response("Server configuration error", { status: 500 });
             }
             const configProxyIP = env.PROXYIP || DEFAULT_PROXYIP;
+            if (!configProxyIP && _pool.length === 0) {
+                await refill();
+            }
             const pool = configProxyIP ? [] : getPool();
             const proxyIP = configProxyIP || pool[Math.floor(Math.random() * pool.length)];
-            if (!configProxyIP && _pool.length === 0 && !_refilling) {
-                ctx.waitUntil(refill());
-            }
             const proxyPort = env.PROXYPORT ? parseInt(env.PROXYPORT) : null;
             const cleartextPassword = env.PASSWORD || DEFAULT_PASSWORD;
             const upgradeHeader = request.headers.get("Upgrade");
