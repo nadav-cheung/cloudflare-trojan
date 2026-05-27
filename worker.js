@@ -242,7 +242,7 @@ const worker_default = {
                 try {
                     await Promise.race([
                         quickRefill(),
-                        new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 10_000)),
+                        new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 15_000)),
                     ]);
                 } catch (e) {
                     console.error('[pool] quick-refill:', e.message);
