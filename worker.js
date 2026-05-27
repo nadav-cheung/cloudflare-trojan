@@ -79,6 +79,7 @@ async function _doRefill() {
         const room = Math.max(0, POOL_MAX - _pool.length);
         const toAdd = alive.slice(0, room);
         _pool.push(...toAdd);
+        if (_pool.length > POOL_MAX) _pool.length = POOL_MAX;
         console.log(`[refill] ${tier.name}: ${candidates.length} probed, ${alive.length} alive, +${toAdd.length} added, pool=${_pool.length} (${Date.now() - tierStart}ms)`);
     }
     console.log(`[refill] done: pool=${_pool.length} total=${Date.now() - start}ms`);
@@ -95,7 +96,8 @@ async function fetchSourceURL(url) {
             .map(s => s.trim())
             .filter(s => s && !s.startsWith('#'));
         if (ips.length === 0) throw new Error('empty');
-        const tag = new URL(url).search || new URL(url).pathname.split('/').pop();
+        const parsed = new URL(url);
+        const tag = parsed.search || parsed.pathname.split('/').pop() || parsed.hostname;
         console.log(`[ipdb] ${tag}: ${ips.length} IPs`);
         return ips;
     } finally {
@@ -141,6 +143,9 @@ async function probeBatch(candidates, maxAlive = Infinity) {
 async function probeOne(addr) {
     const [host, portStr] = addr.includes(':') ? addr.split(':') : [addr, '443'];
     const port = parseInt(portStr);
+    if (!Number.isFinite(port) || port < 1 || port > 65535) {
+        throw new Error(`invalid port: ${addr}`);
+    }
     const start = Date.now();
     const sock = connect({ hostname: host, port });
     try {
@@ -399,6 +404,9 @@ async function parseTrojanHeader(buffer, sha224Password) {
 
 async function handleTCPOutBound(remoteSocket, addressRemote, portRemote, rawClientData, webSocket, proxyIP, proxyPort, log) {
     async function connectAndWrite(address, port) {
+        if (remoteSocket.value) {
+            try { remoteSocket.value.close(); } catch (_) {}
+        }
         const tcpSocket = connect({ hostname: address, port });
         log(`connecting to ${address}:${port}`);
         await tcpSocket.opened;
