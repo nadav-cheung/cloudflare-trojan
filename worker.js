@@ -28,6 +28,7 @@ const PROBE_TIMEOUT_MS = 5000;
 let _pool = [];
 let _refilling = null;
 let _refillingStart = 0;
+let _refillGen = 0;
 let _lastRefillFail = 0;
 const REFILL_RETRY_INTERVAL_MS = 60_000;
 
@@ -48,7 +49,6 @@ async function healthCheck() {
 }
 
 async function quickRefill() {
-    if (_refilling) return;
     const existing = new Set(_pool);
     const candidates = [];
     const [dohResult, ghResult] = await Promise.allSettled([
@@ -84,7 +84,10 @@ async function refill() {
         }
     }
     _refillingStart = Date.now();
-    _refilling = _doRefill().finally(() => { _refilling = null; _refillingStart = 0; });
+    const gen = ++_refillGen;
+    _refilling = _doRefill().finally(() => {
+        if (_refillGen === gen) { _refilling = null; _refillingStart = 0; }
+    });
     return _refilling;
 }
 
@@ -228,7 +231,7 @@ const worker_default = {
                 return new Response("Server configuration error", { status: 500 });
             }
             const configProxyIP = env.PROXYIP || DEFAULT_PROXYIP;
-            if (!configProxyIP && _pool.length === 0 && (Date.now() - _lastRefillFail) > REFILL_RETRY_INTERVAL_MS) {
+            if (!configProxyIP && _pool.length === 0 && !_refilling && (Date.now() - _lastRefillFail) > REFILL_RETRY_INTERVAL_MS) {
                 try {
                     await Promise.race([
                         quickRefill(),
