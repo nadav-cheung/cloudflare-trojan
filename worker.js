@@ -11,14 +11,16 @@ const FALLBACK_PROXY_IPS = [
 ];
 const PROXY_IP_SOURCES = [
     'https://raw.githubusercontent.com/ymyuuu/IPDB/master/BestProxy/proxy.txt',
-    'https://raw.githubusercontent.com/ymyuuu/IPDB/master/BestProxy/bestproxy.txt',
+    'https://raw.githubusercontent.com/ymyuuu/IPDB/master/proxy.txt',
     'https://ipdb.api.030101.xyz/?type=proxy',
-    'https://ipdb.api.030101.xyz/?type=bestproxy',
 ];
-const POOL_MIN = 60;
+const PROXYIP_DOH_DOMAINS = [
+    'proxyip.cmliussss.net',
+];
+const POOL_MIN = 30;
 const POOL_MAX = 200;
-const PROBE_CONCURRENCY = 20;
-const PROBE_TIMEOUT_MS = 2000;
+const PROBE_CONCURRENCY = 50;
+const PROBE_TIMEOUT_MS = 5000;
 
 let _pool = [];
 let _refilling = null;
@@ -97,14 +99,23 @@ async function fetchIPDB() {
 }
 
 async function resolveDoH() {
-    const resp = await fetch('https://cloudflare-dns.com/dns-query?name=proxyip.cmliussss.net&type=A', {
-        headers: { accept: 'application/dns-json' },
-    });
-    if (!resp.ok) throw new Error('DoH failed');
-    const data = await resp.json();
-    const ips = (data.Answer || []).filter(a => a.type === 1).map(a => a.data);
-    if (ips.length === 0) throw new Error('DoH no IPs');
-    return ips;
+    const all = [];
+    const results = await Promise.allSettled(PROXYIP_DOH_DOMAINS.map(async (domain) => {
+        const resp = await fetch(`https://cloudflare-dns.com/dns-query?name=${domain}&type=A`, {
+            headers: { accept: 'application/dns-json' },
+        });
+        if (!resp.ok) throw new Error(`DoH ${domain}: HTTP ${resp.status}`);
+        const data = await resp.json();
+        const ips = (data.Answer || []).filter(a => a.type === 1).map(a => a.data);
+        if (ips.length === 0) throw new Error(`DoH ${domain}: no IPs`);
+        console.log(`[doh] ${domain}: ${ips.length} IPs`);
+        return ips;
+    }));
+    for (const r of results) {
+        if (r.status === 'fulfilled' && r.value) all.push(...r.value);
+    }
+    if (all.length === 0) throw new Error('DoH: all domains failed');
+    return [...new Set(all)];
 }
 
 async function probeBatch(candidates, maxAlive = Infinity) {
