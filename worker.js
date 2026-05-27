@@ -29,6 +29,7 @@ let _pool = [];
 let _refilling = null;
 let _refillingStart = 0;
 let _refillGen = 0;
+let _quickRefilling = false;
 let _lastRefillFail = 0;
 const REFILL_RETRY_INTERVAL_MS = 60_000;
 
@@ -49,29 +50,35 @@ async function healthCheck() {
 }
 
 async function quickRefill() {
-    const existing = new Set(_pool);
-    const candidates = [];
-    const [dohResult, ghResult] = await Promise.allSettled([
-        resolveDoH(),
-        fetchSourceURL(SOURCE_TIERS[1].url),
-    ]);
-    for (const r of [dohResult, ghResult]) {
-        if (r.status === 'fulfilled') {
-            for (const ip of r.value) {
-                if (!existing.has(ip)) {
-                    candidates.push(ip);
-                    existing.add(ip);
+    if (_quickRefilling) return;
+    _quickRefilling = true;
+    try {
+        const existing = new Set(_pool);
+        const candidates = [];
+        const [dohResult, ghResult] = await Promise.allSettled([
+            resolveDoH(),
+            fetchSourceURL(SOURCE_TIERS[1].url),
+        ]);
+        for (const r of [dohResult, ghResult]) {
+            if (r.status === 'fulfilled') {
+                for (const ip of r.value) {
+                    if (!existing.has(ip)) {
+                        candidates.push(ip);
+                        existing.add(ip);
+                    }
                 }
             }
         }
+        if (candidates.length === 0) return;
+        console.log(`[quick-refill] probing ${candidates.length}`);
+        const alive = await probeBatch(candidates);
+        const room = Math.max(0, POOL_MAX - _pool.length);
+        const toAdd = alive.slice(0, room);
+        _pool.push(...toAdd);
+        console.log(`[quick-refill] +${toAdd.length} added, pool=${_pool.length}`);
+    } finally {
+        _quickRefilling = false;
     }
-    if (candidates.length === 0) return;
-    console.log(`[quick-refill] probing ${candidates.length}`);
-    const alive = await probeBatch(candidates);
-    const room = Math.max(0, POOL_MAX - _pool.length);
-    const toAdd = alive.slice(0, room);
-    _pool.push(...toAdd);
-    console.log(`[quick-refill] +${toAdd.length} added, pool=${_pool.length}`);
 }
 
 async function refill() {
