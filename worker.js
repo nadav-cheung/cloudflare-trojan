@@ -37,9 +37,13 @@ function getPool() {
 async function healthCheck() {
     if (_refilling) await _refilling;
     if (_pool.length === 0) return;
-    const before = _pool.length;
-    _pool = await probeBatch(_pool);
-    console.log(`[pool] health check: ${_pool.length}/${before} alive`);
+    const before = [..._pool];
+    const start = Date.now();
+    const alive = await probeBatch(_pool);
+    const dead = before.filter(ip => !alive.includes(ip));
+    _pool = alive;
+    console.log(`[health] ${alive.length}/${before.length} alive, ${dead.length} dead (${Date.now() - start}ms)`);
+    if (dead.length > 0) console.log(`[health] removed: ${dead.join(', ')}`);
 }
 
 async function refill() {
@@ -49,6 +53,7 @@ async function refill() {
 }
 
 async function _doRefill() {
+    const start = Date.now();
     for (const tier of SOURCE_TIERS) {
         if (_pool.length >= POOL_MAX) break;
 
@@ -68,13 +73,15 @@ async function _doRefill() {
         }
 
         const needed = POOL_MAX - _pool.length;
+        const tierStart = Date.now();
         console.log(`[refill] ${tier.name}: probing ${candidates.length} (need ${needed})`);
         const alive = await probeBatch(candidates, needed);
         const room = Math.max(0, POOL_MAX - _pool.length);
         const toAdd = alive.slice(0, room);
         _pool.push(...toAdd);
-        console.log(`[refill] ${tier.name}: ${candidates.length} probed, ${alive.length} alive, +${toAdd.length} added, pool=${_pool.length}`);
+        console.log(`[refill] ${tier.name}: ${candidates.length} probed, ${alive.length} alive, +${toAdd.length} added, pool=${_pool.length} (${Date.now() - tierStart}ms)`);
     }
+    console.log(`[refill] done: pool=${_pool.length} total=${Date.now() - start}ms`);
 }
 
 async function fetchSourceURL(url) {
@@ -134,12 +141,17 @@ async function probeBatch(candidates, maxAlive = Infinity) {
 async function probeOne(addr) {
     const [host, portStr] = addr.includes(':') ? addr.split(':') : [addr, '443'];
     const port = parseInt(portStr);
+    const start = Date.now();
     const sock = connect({ hostname: host, port });
     try {
         await Promise.race([
             sock.opened,
             new Promise((_, r) => setTimeout(() => r(new Error('timeout')), PROBE_TIMEOUT_MS))
         ]);
+        console.log(`[probe] ${addr} OK ${Date.now() - start}ms`);
+    } catch (e) {
+        console.log(`[probe] ${addr} FAIL ${Date.now() - start}ms ${e.message}`);
+        throw e;
     } finally {
         sock.close();
     }
