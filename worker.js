@@ -209,15 +209,6 @@ async function probeOne(addr) {
     return addr;
 }
 
-function shuffle(arr) {
-    const a = [...arr];
-    for (let i = a.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [a[i], a[j]] = [a[j], a[i]];
-    }
-    return a;
-}
-
 const textDecoder = new TextDecoder();
 
 if (!isValidSHA224(DEFAULT_SHA224_PASS)) {
