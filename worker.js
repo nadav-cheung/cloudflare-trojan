@@ -246,25 +246,10 @@ const worker_default = {
             if (env.SHA224PASS && !isValidSHA224(env.SHA224PASS)) {
                 return new Response("Server configuration error", { status: 500 });
             }
-            const configProxyIP = env.PROXYIP || DEFAULT_PROXYIP;
-            if (!configProxyIP && _pool.length === 0 && !_refilling && (Date.now() - _lastRefillFail) > REFILL_RETRY_INTERVAL_MS) {
-                try {
-                    await Promise.race([
-                        quickRefill(),
-                        new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 15_000)),
-                    ]);
-                } catch (e) {
-                    console.error('[pool] quick-refill:', e.message);
-                }
-                if (_pool.length === 0) _lastRefillFail = Date.now();
-            }
-            const pool = configProxyIP ? [] : getPool();
-            const proxyIP = configProxyIP || pool[Math.floor(Math.random() * pool.length)];
-            const proxyPort = env.PROXYPORT ? parseInt(env.PROXYPORT) : null;
-            const cleartextPassword = env.PASSWORD || DEFAULT_PASSWORD;
             const upgradeHeader = request.headers.get("Upgrade");
             if (!upgradeHeader || upgradeHeader.toLowerCase() !== "websocket") {
                 const url = new URL(request.url);
+                const cleartextPassword = env.PASSWORD || DEFAULT_PASSWORD;
                 switch (url.pathname) {
                     case "/pool": {
                         const linkToken = env.LINK_TOKEN;
@@ -293,9 +278,23 @@ const worker_default = {
                     default:
                         return new Response("404 Not found", { status: 404 });
                 }
-            } else {
-                return await trojanOverWSHandler(request, sha224Password, proxyIP, proxyPort);
             }
+            const configProxyIP = env.PROXYIP || DEFAULT_PROXYIP;
+            if (!configProxyIP && _pool.length === 0 && !_refilling && (Date.now() - _lastRefillFail) > REFILL_RETRY_INTERVAL_MS) {
+                try {
+                    await Promise.race([
+                        quickRefill(),
+                        new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 15_000)),
+                    ]);
+                } catch (e) {
+                    console.error('[pool] quick-refill:', e.message);
+                }
+                if (_pool.length === 0) _lastRefillFail = Date.now();
+            }
+            const pool = configProxyIP ? [] : getPool();
+            const proxyIP = configProxyIP || pool[Math.floor(Math.random() * pool.length)];
+            const proxyPort = env.PROXYPORT ? parseInt(env.PROXYPORT) : null;
+            return await trojanOverWSHandler(request, sha224Password, proxyIP, proxyPort);
         } catch (err) {
             console.error("fetch error:", err);
             return new Response("Bad Request", { status: 400 });
