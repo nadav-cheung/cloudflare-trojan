@@ -320,8 +320,8 @@ const worker_default = {
 async function trojanOverWSHandler(request, sha224Password, proxyIP, proxyPort) {
     const webSocketPair = new WebSocketPair();
     const [client, webSocket] = Object.values(webSocketPair);
-    webSocket.accept();
     webSocket.binaryType = 'arraybuffer';
+    webSocket.accept();
     let address = "";
     let portWithRandomLog = "";
     const log = (info, event) => {
