@@ -221,13 +221,16 @@ async function probeOne(addr) {
     }
     const start = Date.now();
     const sock = connect({ hostname: host, port });
+    let timer;
     try {
         await Promise.race([
             sock.opened,
-            new Promise((_, r) => setTimeout(() => r(new Error('timeout')), PROBE_TIMEOUT_MS))
+            new Promise((_, r) => { timer = setTimeout(() => r(new Error('timeout')), PROBE_TIMEOUT_MS); })
         ]);
+        clearTimeout(timer);
         console.log(`[probe] ${addr} OK ${Date.now() - start}ms`);
     } catch (e) {
+        clearTimeout(timer);
         console.log(`[probe] ${addr} FAIL ${Date.now() - start}ms ${e.message}`);
         throw e;
     } finally {
@@ -237,6 +240,7 @@ async function probeOne(addr) {
 }
 
 const textDecoder = new TextDecoder();
+const textEncoder = new TextEncoder();
 
 if (!isValidSHA224(DEFAULT_SHA224_PASS)) {
     throw new Error('sha224Password is not valid');
@@ -302,7 +306,7 @@ const worker_default = {
             }
             const pool = configProxyIP ? [] : getPool();
             const proxyIP = configProxyIP || pool[Math.floor(Math.random() * pool.length)];
-            const proxyPort = env.PROXYPORT && Number.isFinite(parseInt(env.PROXYPORT)) ? parseInt(env.PROXYPORT) : null;
+            const proxyPort = env.PROXYPORT ? (parseInt(env.PROXYPORT) || null) : null;
             return await trojanOverWSHandler(request, sha224Password, proxyIP, proxyPort);
         } catch (err) {
             console.error("fetch error:", err?.message || err, err?.stack);
@@ -340,7 +344,9 @@ async function trojanOverWSHandler(request, sha224Password, proxyIP, proxyPort) 
     let address = "";
     let portWithRandomLog = "";
     const log = (info, event) => {
-        console.log(`[${address}:${portWithRandomLog}] ${info}`, event || "");
+        event === undefined
+            ? console.log(`[${address}:${portWithRandomLog}] ${info}`)
+            : console.log(`[${address}:${portWithRandomLog}] ${info}`, event);
     };
     const earlyDataHeader = request.headers.get("sec-websocket-protocol") || "";
     const readableWebSocketStream = makeReadableWebSocketStream(webSocket, earlyDataHeader, log);
@@ -384,7 +390,7 @@ async function trojanOverWSHandler(request, sha224Password, proxyIP, proxyPort) 
                 rawClientData
             } = await parseTrojanHeader(chunk, sha224Password);
             address = addressRemote;
-            portWithRandomLog = `${portRemote}--${Math.random()} tcp`;
+            portWithRandomLog = `${portRemote}/tcp`;
             headerParsed = true;
             if (hasError) {
                 throw new Error(message);
@@ -393,9 +399,15 @@ async function trojanOverWSHandler(request, sha224Password, proxyIP, proxyPort) 
         },
         close() {
             log(`readableWebSocketStream is closed`);
+            if (remoteSocketWrapper.value) {
+                try { remoteSocketWrapper.value.close(); } catch (_) {}
+            }
         },
         abort(reason) {
             log(`readableWebSocketStream is aborted`, reason?.message || reason?.stack || String(reason));
+            if (remoteSocketWrapper.value) {
+                try { remoteSocketWrapper.value.close(); } catch (_) {}
+            }
         }
     })).catch((err) => {
         log("readableWebSocketStream pipeTo error", err);
@@ -491,7 +503,14 @@ async function parseTrojanHeader(buffer, sha224Password) {
     }
 
     const portIndex = addressIndex + addressLength;
+    if (socks5DataBuffer.byteLength < portIndex + 4) {
+        return { hasError: true, message: "invalid SOCKS5 request data (truncated)" };
+    }
     const portRemote = new DataView(socks5DataBuffer.slice(portIndex, portIndex + 2)).getUint16(0);
+    const crlf2 = new DataView(socks5DataBuffer.slice(portIndex + 2, portIndex + 4));
+    if (crlf2.getUint8(0) !== 0x0d || crlf2.getUint8(1) !== 0x0a) {
+        return { hasError: true, message: "invalid header format (missing trailing CR LF)" };
+    }
     return {
         hasError: false,
         addressRemote: address,
@@ -519,6 +538,7 @@ async function connectThenPipe(remoteSocket, addressRemote, portRemote, rawClien
             }
             return tcpSocket;
         } catch (e) {
+            remoteSocket.value = null;
             try { tcpSocket.close(); } catch (_) {}
             throw e;
         }
@@ -526,10 +546,12 @@ async function connectThenPipe(remoteSocket, addressRemote, portRemote, rawClien
     function connectSafe(address, port, track, settled) {
         const tcpSocket = connect({ hostname: address, port });
         log(`connecting to ${address}:${port}`);
+        let timer;
         return Promise.race([
             tcpSocket.opened,
-            new Promise((_, r) => setTimeout(() => r(new Error('connect timeout')), 10_000))
+            new Promise((_, r) => { timer = setTimeout(() => r(new Error('connect timeout')), 10_000); })
         ]).then(() => {
+            clearTimeout(timer);
             if (settled.value) {
                 try { tcpSocket.close(); } catch (_) {}
                 throw new Error('race settled');
@@ -538,6 +560,7 @@ async function connectThenPipe(remoteSocket, addressRemote, portRemote, rawClien
             track.push(tcpSocket);
             return { host: address, port, tcpSocket };
         }).catch((e) => {
+            clearTimeout(timer);
             try { tcpSocket.close(); } catch (_) {}
             throw e;
         });
@@ -578,7 +601,7 @@ async function connectThenPipe(remoteSocket, addressRemote, portRemote, rawClien
             }));
             settled.value = true;
             // Write rawClientData to the winner only — losing sockets never see it
-            const data = new Uint8Array(rawClientData).buffer;
+            const data = rawClientData;
             try {
                 const writer = winner.tcpSocket.writable.getWriter();
                 try {
@@ -629,23 +652,27 @@ async function connectThenPipe(remoteSocket, addressRemote, portRemote, rawClien
 
 function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) {
     let readableStreamCancel = false;
+    let streamErrored = false;
     const stream = new ReadableStream({
         start(controller) {
             webSocketServer.addEventListener("message", (event) => {
-                if (readableStreamCancel) return;
+                if (readableStreamCancel || streamErrored) return;
                 controller.enqueue(event.data);
             });
             webSocketServer.addEventListener("close", () => {
                 safeCloseWebSocket(webSocketServer);
-                if (readableStreamCancel) return;
+                if (readableStreamCancel || streamErrored) return;
                 controller.close();
             });
             webSocketServer.addEventListener("error", (err) => {
                 log("webSocketServer error", err?.message || err?.type || String(err));
+                if (streamErrored) return;
+                streamErrored = true;
                 controller.error(err);
             });
             const { earlyData, error } = base64ToArrayBuffer(earlyDataHeader);
             if (error) {
+                streamErrored = true;
                 controller.error(error);
             } else if (earlyData) {
                 controller.enqueue(earlyData);
@@ -671,7 +698,11 @@ async function remoteSocketToWS(remoteSocket, webSocket, retry, log) {
                     controller.error("webSocket connection is not open");
                     return;
                 }
-                webSocket.send(chunk);
+                try {
+                    webSocket.send(chunk);
+                } catch (e) {
+                    controller.error(e);
+                }
             },
             close() {
                 log(`remoteSocket.readable is closed, hasIncomingData: ${hasIncomingData}`);
@@ -694,9 +725,8 @@ async function remoteSocketToWS(remoteSocket, webSocket, retry, log) {
 }
 
 function timingSafeEqual(a, b) {
-    const encoder = new TextEncoder();
-    const bufA = encoder.encode(a);
-    const bufB = encoder.encode(b);
+    const bufA = textEncoder.encode(a);
+    const bufB = textEncoder.encode(b);
     const len = Math.max(bufA.length, bufB.length);
     let result = bufA.length ^ bufB.length;
     for (let i = 0; i < len; i++) {
