@@ -321,6 +321,7 @@ async function trojanOverWSHandler(request, sha224Password, proxyIP, proxyPort) 
     const webSocketPair = new WebSocketPair();
     const [client, webSocket] = Object.values(webSocketPair);
     webSocket.accept();
+    webSocket.binaryType = 'arraybuffer';
     let address = "";
     let portWithRandomLog = "";
     const log = (info, event) => {
@@ -377,6 +378,13 @@ async function trojanOverWSHandler(request, sha224Password, proxyIP, proxyPort) 
 async function parseTrojanHeader(buffer, sha224Password) {
     if (buffer.byteLength < 58) {
         return { hasError: true, message: "invalid data" };
+    }
+    if (!(buffer instanceof ArrayBuffer)) {
+        if (typeof buffer.arrayBuffer === 'function') {
+            buffer = await buffer.arrayBuffer();
+        } else {
+            buffer = new Uint8Array(buffer).buffer;
+        }
     }
     const bufView = new DataView(buffer);
     if (bufView.getUint8(56) !== 0x0d || bufView.getUint8(57) !== 0x0a) {
