@@ -20,10 +20,10 @@ const SOURCE_TIERS = [
 const PROXYIP_DOH_DOMAINS = [
     'proxyip.cmliussss.net',
 ];
-const POOL_MIN = 20;
-const POOL_MAX = 200;
+const POOL_MIN = 10;
+const POOL_MAX = 50;
 const PROBE_CONCURRENCY = 6;
-const PROBE_TIMEOUT_MS = 80;
+const PROBE_TIMEOUT_MS = 100;
 
 let _pool = [];
 let _refilling = null;
