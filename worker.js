@@ -23,7 +23,8 @@ const PROXYIP_DOH_DOMAINS = [
 const POOL_MIN = 4;
 const POOL_MAX = 16;
 const PROBE_CONCURRENCY = 6;
-const PROBE_TIMEOUT_MS = 20;
+const PROBE_TIMEOUT_MS = 100;
+const CRON_PROBE_TIMEOUT_MS = 30;
 
 let _pool = [];
 let _refilling = null;
@@ -42,7 +43,7 @@ async function healthCheck() {
     if (_pool.length === 0) return;
     const before = [..._pool];
     const start = Date.now();
-    const alive = await probeBatch(_pool);
+    const alive = await probeBatch(_pool, Infinity, CRON_PROBE_TIMEOUT_MS);
     const dead = before.filter(ip => !alive.includes(ip));
     _pool.length = 0;
     _pool.push(...alive);
@@ -198,11 +199,11 @@ async function resolveDoH() {
     return [...new Set(all)];
 }
 
-async function probeBatch(candidates, maxAlive = Infinity) {
+async function probeBatch(candidates, maxAlive = Infinity, timeout = PROBE_TIMEOUT_MS) {
     const alive = [];
     for (let i = 0; i < candidates.length && alive.length < maxAlive; i += PROBE_CONCURRENCY) {
         const chunk = candidates.slice(i, i + PROBE_CONCURRENCY);
-        const results = await Promise.allSettled(chunk.map(addr => probeOne(addr)));
+        const results = await Promise.allSettled(chunk.map(addr => probeOne(addr, timeout)));
         for (const r of results) {
             if (r.status === 'fulfilled') {
                 alive.push(r.value);
@@ -213,7 +214,7 @@ async function probeBatch(candidates, maxAlive = Infinity) {
     return alive;
 }
 
-async function probeOne(addr) {
+async function probeOne(addr, timeout = PROBE_TIMEOUT_MS) {
     const [host, portStr] = addr.includes(':') ? addr.split(':') : [addr, '443'];
     const port = parseInt(portStr);
     if (!Number.isFinite(port) || port < 1 || port > 65535) {
@@ -225,7 +226,7 @@ async function probeOne(addr) {
     try {
         await Promise.race([
             sock.opened,
-            new Promise((_, r) => { timer = setTimeout(() => r(new Error('timeout')), PROBE_TIMEOUT_MS); })
+            new Promise((_, r) => { timer = setTimeout(() => r(new Error('timeout')), timeout); })
         ]);
         clearTimeout(timer);
         console.log(`[probe] ${addr} OK ${Date.now() - start}ms`);
