@@ -24,7 +24,7 @@ const POOL_MIN = 4;
 const POOL_MAX = 16;
 const PROBE_CONCURRENCY = 6;
 const PROBE_TIMEOUT_MS = 100;
-const CRON_PROBE_TIMEOUT_MS = 30;
+const CRON_PROBE_TIMEOUT_MS = 20;
 
 let _pool = [];
 let _refilling = null;
