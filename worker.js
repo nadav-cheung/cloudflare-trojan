@@ -44,7 +44,8 @@ async function healthCheck() {
     const start = Date.now();
     const alive = await probeBatch(_pool);
     const dead = before.filter(ip => !alive.includes(ip));
-    _pool = alive;
+    _pool.length = 0;
+    _pool.push(...alive);
     console.log(`[health] ${alive.length}/${before.length} alive, ${dead.length} dead (${Date.now() - start}ms)`);
     if (dead.length > 0) console.log(`[health] removed: ${dead.join(', ')}`);
 }
@@ -60,6 +61,8 @@ function isPublicIP(ip) {
     if (a === 169 && b === 254) return false;
     if (a === 100 && b >= 64 && b <= 127) return false;
     if (a === 192 && b === 0 && c === 0) return false;
+    if (a === 192 && b === 0 && c === 2) return false;
+    if (a === 198 && b >= 18 && b <= 19) return false;
     if (a === 198 && b === 51 && c === 100) return false;
     if (a === 203 && b === 0 && c === 113) return false;
     if (a === 224) return false;
@@ -77,7 +80,8 @@ async function quickRefill() {
             resolveDoH(),
             fetchSourceURL(SOURCE_TIERS[1].url),
         ]);
-        for (const r of [dohResult, ghResult]) {
+        const quickSources = ['doh', 'gh-bestproxy'];
+        for (const [i, r] of [dohResult, ghResult].entries()) {
             if (r.status === 'fulfilled') {
                 for (const ip of r.value) {
                     if (!existing.has(ip) && isPublicIP(ip)) {
@@ -85,6 +89,8 @@ async function quickRefill() {
                         existing.add(ip);
                     }
                 }
+            } else {
+                console.log(`[quick-refill] ${quickSources[i]}: FAIL - ${r.reason?.message || r.reason}`);
             }
         }
         if (candidates.length === 0) return;
@@ -102,8 +108,7 @@ async function quickRefill() {
 async function refill() {
     if (_refilling) {
         if (_refillingStart && Date.now() - _refillingStart > 90_000) {
-            console.error('[refill] stuck lock detected, clearing');
-            _refilling = null;
+            console.error('[refill] stuck lock detected, replacing');
         } else {
             return _refilling;
         }
@@ -159,7 +164,7 @@ async function fetchSourceURL(url) {
         const ips = text.trim().split('\n')
             .map(s => s.trim())
             .filter(s => s && !s.startsWith('#'));
-        if (ips.length === 0) throw new Error('empty');
+        if (ips.length === 0) throw new Error(`empty response from ${url}`);
         const parsed = new URL(url);
         const tag = parsed.search || parsed.pathname.split('/').pop() || parsed.hostname;
         console.log(`[ipdb] ${tag}: ${ips.length} IPs`);
@@ -182,8 +187,12 @@ async function resolveDoH() {
         console.log(`[doh] ${domain}: ${ips.length} IPs`);
         return ips;
     }));
-    for (const r of results) {
-        if (r.status === 'fulfilled' && r.value) all.push(...r.value);
+    for (const [i, r] of results.entries()) {
+        if (r.status === 'fulfilled' && r.value) {
+            all.push(...r.value);
+        } else if (r.status === 'rejected') {
+            console.log(`[doh] ${PROXYIP_DOH_DOMAINS[i]}: FAIL - ${r.reason?.message || r.reason}`);
+        }
     }
     if (all.length === 0) throw new Error('DoH: all domains failed');
     return [...new Set(all)];
@@ -222,7 +231,7 @@ async function probeOne(addr) {
         console.log(`[probe] ${addr} FAIL ${Date.now() - start}ms ${e.message}`);
         throw e;
     } finally {
-        sock.close();
+        try { sock.close(); } catch (_) {}
     }
     return addr;
 }
@@ -293,11 +302,18 @@ const worker_default = {
             }
             const pool = configProxyIP ? [] : getPool();
             const proxyIP = configProxyIP || pool[Math.floor(Math.random() * pool.length)];
-            const proxyPort = env.PROXYPORT ? parseInt(env.PROXYPORT) : null;
+            const proxyPort = env.PROXYPORT && Number.isFinite(parseInt(env.PROXYPORT)) ? parseInt(env.PROXYPORT) : null;
             return await trojanOverWSHandler(request, sha224Password, proxyIP, proxyPort);
         } catch (err) {
-            console.error("fetch error:", err);
-            return new Response("Bad Request", { status: 400 });
+            console.error("fetch error:", err?.message || err, err?.stack);
+            const msg = (err?.message || String(err)).toLowerCase();
+            if (msg.includes('timeout')) {
+                return new Response("Gateway Timeout", { status: 504 });
+            }
+            if (msg.includes('connect') || msg.includes('refused') || msg.includes('unreachable')) {
+                return new Response("Bad Gateway", { status: 502 });
+            }
+            return new Response("Internal Server Error", { status: 500 });
         }
     },
 
@@ -329,6 +345,7 @@ async function trojanOverWSHandler(request, sha224Password, proxyIP, proxyPort) 
     const earlyDataHeader = request.headers.get("sec-websocket-protocol") || "";
     const readableWebSocketStream = makeReadableWebSocketStream(webSocket, earlyDataHeader, log);
     let remoteSocketWrapper = { value: null };
+    let headerParsed = false;
 
     readableWebSocketStream.pipeTo(new WritableStream({
         async write(chunk, controller) {
@@ -350,7 +367,13 @@ async function trojanOverWSHandler(request, sha224Password, proxyIP, proxyPort) 
                     } finally {
                         writer.releaseLock();
                     }
+                } else {
+                    log(`write dropped: remoteSocket is null after retry`);
                 }
+                return;
+            }
+            if (headerParsed) {
+                log(`write dropped: no socket after header parsed`);
                 return;
             }
             const {
@@ -362,6 +385,7 @@ async function trojanOverWSHandler(request, sha224Password, proxyIP, proxyPort) 
             } = await parseTrojanHeader(chunk, sha224Password);
             address = addressRemote;
             portWithRandomLog = `${portRemote}--${Math.random()} tcp`;
+            headerParsed = true;
             if (hasError) {
                 throw new Error(message);
             }
@@ -371,7 +395,7 @@ async function trojanOverWSHandler(request, sha224Password, proxyIP, proxyPort) 
             log(`readableWebSocketStream is closed`);
         },
         abort(reason) {
-            log(`readableWebSocketStream is aborted`, JSON.stringify(reason));
+            log(`readableWebSocketStream is aborted`, reason?.message || reason?.stack || String(reason));
         }
     })).catch((err) => {
         log("readableWebSocketStream pipeTo error", err);
@@ -384,15 +408,15 @@ async function trojanOverWSHandler(request, sha224Password, proxyIP, proxyPort) 
 }
 
 async function parseTrojanHeader(buffer, sha224Password) {
-    if (buffer.byteLength < 58) {
-        return { hasError: true, message: "invalid data" };
-    }
     if (!(buffer instanceof ArrayBuffer)) {
         if (typeof buffer.arrayBuffer === 'function') {
             buffer = await buffer.arrayBuffer();
         } else {
             buffer = new Uint8Array(buffer).buffer;
         }
+    }
+    if (buffer.byteLength < 58) {
+        return { hasError: true, message: "invalid data" };
     }
     const bufView = new DataView(buffer);
     if (bufView.getUint8(56) !== 0x0d || bufView.getUint8(57) !== 0x0a) {
@@ -483,27 +507,10 @@ async function connectThenPipe(remoteSocket, addressRemote, portRemote, rawClien
         }
         const tcpSocket = connect({ hostname: address, port });
         log(`connecting to ${address}:${port}`);
-        await tcpSocket.opened;
-        remoteSocket.value = tcpSocket;
-        log(`connected to ${address}:${port}`);
-        const writer = tcpSocket.writable.getWriter();
         try {
-            await writer.write(data);
-        } finally {
-            writer.releaseLock();
-        }
-        return tcpSocket;
-    }
-    function connectAndWriteSafe(address, port, data, track, settled) {
-        const tcpSocket = connect({ hostname: address, port });
-        log(`connecting to ${address}:${port}`);
-        return tcpSocket.opened.then(async () => {
-            if (settled.value) {
-                try { tcpSocket.close(); } catch (_) {}
-                throw new Error('race settled');
-            }
+            await tcpSocket.opened;
+            remoteSocket.value = tcpSocket;
             log(`connected to ${address}:${port}`);
-            track.push(tcpSocket);
             const writer = tcpSocket.writable.getWriter();
             try {
                 await writer.write(data);
@@ -511,6 +518,25 @@ async function connectThenPipe(remoteSocket, addressRemote, portRemote, rawClien
                 writer.releaseLock();
             }
             return tcpSocket;
+        } catch (e) {
+            try { tcpSocket.close(); } catch (_) {}
+            throw e;
+        }
+    }
+    function connectSafe(address, port, track, settled) {
+        const tcpSocket = connect({ hostname: address, port });
+        log(`connecting to ${address}:${port}`);
+        return Promise.race([
+            tcpSocket.opened,
+            new Promise((_, r) => setTimeout(() => r(new Error('connect timeout')), 10_000))
+        ]).then(() => {
+            if (settled.value) {
+                try { tcpSocket.close(); } catch (_) {}
+                throw new Error('race settled');
+            }
+            log(`connected to ${address}:${port}`);
+            track.push(tcpSocket);
+            return { host: address, port, tcpSocket };
         }).catch((e) => {
             try { tcpSocket.close(); } catch (_) {}
             throw e;
@@ -537,6 +563,7 @@ async function connectThenPipe(remoteSocket, addressRemote, portRemote, rawClien
         }
         if (candidates.length === 0) {
             log('retry exhausted: no candidates');
+            remoteSocket.connecting = undefined;
             safeCloseWebSocket(webSocket);
             resolveConnecting();
             return;
@@ -547,30 +574,44 @@ async function connectThenPipe(remoteSocket, addressRemote, portRemote, rawClien
             const winner = await Promise.any(candidates.map(async (addr) => {
                 const [host, portStr] = addr.includes(':') ? addr.split(':') : [addr, null];
                 const port = portStr ? parseInt(portStr) : (proxyPort || portRemote);
-                const data = new Uint8Array(rawClientData).buffer;
-                const tcpSocket = await connectAndWriteSafe(host, port, data, sockets, settled);
-                return { host, port, tcpSocket };
+                return await connectSafe(host, port, sockets, settled);
             }));
             settled.value = true;
-            log(`retry success via ${winner.host}:${winner.port}`);
-            remoteSocket.value = winner.tcpSocket;
-            for (const s of sockets) {
-                if (s !== winner.tcpSocket) {
-                    try { s.close(); } catch (_) {}
+            // Write rawClientData to the winner only — losing sockets never see it
+            const data = new Uint8Array(rawClientData).buffer;
+            try {
+                const writer = winner.tcpSocket.writable.getWriter();
+                try {
+                    await writer.write(data);
+                } finally {
+                    writer.releaseLock();
                 }
+                log(`retry success via ${winner.host}:${winner.port}`);
+                remoteSocket.connecting = undefined;
+                remoteSocket.value = winner.tcpSocket;
+                for (const s of sockets) {
+                    if (s !== winner.tcpSocket) {
+                        try { s.close(); } catch (_) {}
+                    }
+                }
+                remoteSocketToWS(winner.tcpSocket, webSocket, null, log).catch((err) => {
+                    log("remoteSocketToWS retry error", err);
+                    safeCloseWebSocket(webSocket);
+                });
+                resolveConnecting();
+                return;
+            } catch (writeErr) {
+                log(`retry winner write failed: ${writeErr.message}`);
             }
-            remoteSocketToWS(winner.tcpSocket, webSocket, null, log).catch((err) => {
-                log("remoteSocketToWS retry error", err);
-                safeCloseWebSocket(webSocket);
-            });
-            resolveConnecting();
-            return;
-        } catch (_) {
-            for (const s of sockets) {
-                try { s.close(); } catch (_) {}
-            }
+        } catch (e) {
+            console.error(`[retry] all ${candidates.length} candidates connect failed:`,
+                e.errors?.map(err => err.message).join('; ') || e.message || e);
+        }
+        for (const s of sockets) {
+            try { s.close(); } catch (_) {}
         }
         log(`retry exhausted after ${candidates.length} attempts`);
+        remoteSocket.connecting = undefined;
         safeCloseWebSocket(webSocket);
         resolveConnecting();
     }
@@ -600,7 +641,7 @@ function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) {
                 controller.close();
             });
             webSocketServer.addEventListener("error", (err) => {
-                log("webSocketServer error");
+                log("webSocketServer error", err?.message || err?.type || String(err));
                 controller.error(err);
             });
             const { earlyData, error } = base64ToArrayBuffer(earlyDataHeader);
@@ -643,9 +684,11 @@ async function remoteSocketToWS(remoteSocket, webSocket, retry, log) {
         console.error(`remoteSocketToWS error:`, error.stack || error);
     });
     if (hasIncomingData === false && retry) {
+        try { remoteSocket.close(); } catch (_) {}
         log(`retry`);
         await retry();
     } else {
+        try { remoteSocket.close(); } catch (_) {}
         safeCloseWebSocket(webSocket);
     }
 }
