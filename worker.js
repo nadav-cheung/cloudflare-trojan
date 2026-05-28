@@ -269,6 +269,14 @@ const worker_default = {
                         if (linkToken && url.searchParams.get('token') !== linkToken) {
                             return new Response("404 Not found", { status: 404 });
                         }
+                        if (_pool.length === 0) {
+                            try {
+                                await Promise.race([
+                                    refill(),
+                                    new Promise((_, r) => setTimeout(() => r(new Error('timeout')), 15_000)),
+                                ]);
+                            } catch (_) {}
+                        }
                         return new Response(
                             JSON.stringify({ pool: _pool, fallback: FALLBACK_PROXY_IPS }, null, 2),
                             { status: 200, headers: { "Content-Type": "application/json" } }
