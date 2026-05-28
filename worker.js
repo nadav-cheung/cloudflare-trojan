@@ -20,10 +20,10 @@ const SOURCE_TIERS = [
 const PROXYIP_DOH_DOMAINS = [
     'proxyip.cmliussss.net',
 ];
-const POOL_MIN = 10;
-const POOL_MAX = 50;
+const POOL_MIN = 4;
+const POOL_MAX = 16;
 const PROBE_CONCURRENCY = 6;
-const PROBE_TIMEOUT_MS = 100;
+const PROBE_TIMEOUT_MS = 60;
 
 let _pool = [];
 let _refilling = null;
@@ -341,6 +341,18 @@ async function trojanOverWSHandler(request, sha224Password, proxyIP, proxyPort) 
                 }
                 return;
             }
+            if (remoteSocketWrapper.connecting) {
+                await remoteSocketWrapper.connecting;
+                if (remoteSocketWrapper.value) {
+                    const writer = remoteSocketWrapper.value.writable.getWriter();
+                    try {
+                        await writer.write(chunk);
+                    } finally {
+                        writer.releaseLock();
+                    }
+                }
+                return;
+            }
             const {
                 hasError,
                 message,
@@ -353,10 +365,7 @@ async function trojanOverWSHandler(request, sha224Password, proxyIP, proxyPort) 
             if (hasError) {
                 throw new Error(message);
             }
-            handleTCPOutBound(remoteSocketWrapper, addressRemote, portRemote, rawClientData, webSocket, proxyIP, proxyPort, log).catch((err) => {
-                log("handleTCPOutBound error", err);
-                safeCloseWebSocket(webSocket);
-            });
+            await connectThenPipe(remoteSocketWrapper, addressRemote, portRemote, rawClientData, webSocket, proxyIP, proxyPort, log);
         },
         close() {
             log(`readableWebSocketStream is closed`);
@@ -467,8 +476,8 @@ async function parseTrojanHeader(buffer, sha224Password) {
     };
 }
 
-async function handleTCPOutBound(remoteSocket, addressRemote, portRemote, rawClientData, webSocket, proxyIP, proxyPort, log) {
-    async function connectAndWrite(address, port) {
+async function connectThenPipe(remoteSocket, addressRemote, portRemote, rawClientData, webSocket, proxyIP, proxyPort, log) {
+    async function connectAndWrite(address, port, data = rawClientData) {
         if (remoteSocket.value) {
             try { remoteSocket.value.close(); } catch (_) {}
         }
@@ -479,22 +488,38 @@ async function handleTCPOutBound(remoteSocket, addressRemote, portRemote, rawCli
         log(`connected to ${address}:${port}`);
         const writer = tcpSocket.writable.getWriter();
         try {
-            await writer.write(rawClientData);
+            await writer.write(data);
         } finally {
             writer.releaseLock();
         }
         return tcpSocket;
     }
-    async function tryRetry(retryAddr, retryPort) {
-        const tcpSocket = await connectAndWrite(retryAddr, retryPort);
-        tcpSocket.closed.catch((error) => {
-            console.log("retry tcpSocket closed error", error);
-        }).finally(() => {
-            safeCloseWebSocket(webSocket);
+    function connectAndWriteSafe(address, port, data, track, settled) {
+        const tcpSocket = connect({ hostname: address, port });
+        log(`connecting to ${address}:${port}`);
+        return tcpSocket.opened.then(async () => {
+            if (settled.value) {
+                try { tcpSocket.close(); } catch (_) {}
+                throw new Error('race settled');
+            }
+            log(`connected to ${address}:${port}`);
+            track.push(tcpSocket);
+            const writer = tcpSocket.writable.getWriter();
+            try {
+                await writer.write(data);
+            } finally {
+                writer.releaseLock();
+            }
+            return tcpSocket;
+        }).catch((e) => {
+            try { tcpSocket.close(); } catch (_) {}
+            throw e;
         });
-        await remoteSocketToWS(tcpSocket, webSocket, null, log);
     }
     async function retry() {
+        let resolveConnecting;
+        remoteSocket.connecting = new Promise(r => { resolveConnecting = r; });
+        remoteSocket.value = null;
         const pool = getPool();
         const tried = new Set();
         const candidates = [];
@@ -510,23 +535,51 @@ async function handleTCPOutBound(remoteSocket, addressRemote, portRemote, rawCli
                 candidates.push(addr);
             }
         }
-        for (const addr of candidates) {
-            const [host, portStr] = addr.includes(':') ? addr.split(':') : [addr, null];
-            const port = portStr ? parseInt(portStr) : (proxyPort || portRemote);
-            try {
-                await tryRetry(host, port);
-                log(`retry success via ${host}:${port}`);
-                return;
-            } catch (e) {
-                log(`retry ${host}:${port} failed: ${e.message}`);
+        if (candidates.length === 0) {
+            log('retry exhausted: no candidates');
+            safeCloseWebSocket(webSocket);
+            resolveConnecting();
+            return;
+        }
+        const sockets = [];
+        const settled = { value: false };
+        try {
+            const winner = await Promise.any(candidates.map(async (addr) => {
+                const [host, portStr] = addr.includes(':') ? addr.split(':') : [addr, null];
+                const port = portStr ? parseInt(portStr) : (proxyPort || portRemote);
+                const data = new Uint8Array(rawClientData).buffer;
+                const tcpSocket = await connectAndWriteSafe(host, port, data, sockets, settled);
+                return { host, port, tcpSocket };
+            }));
+            settled.value = true;
+            log(`retry success via ${winner.host}:${winner.port}`);
+            remoteSocket.value = winner.tcpSocket;
+            for (const s of sockets) {
+                if (s !== winner.tcpSocket) {
+                    try { s.close(); } catch (_) {}
+                }
+            }
+            remoteSocketToWS(winner.tcpSocket, webSocket, null, log).catch((err) => {
+                log("remoteSocketToWS retry error", err);
+                safeCloseWebSocket(webSocket);
+            });
+            resolveConnecting();
+            return;
+        } catch (_) {
+            for (const s of sockets) {
+                try { s.close(); } catch (_) {}
             }
         }
         log(`retry exhausted after ${candidates.length} attempts`);
         safeCloseWebSocket(webSocket);
+        resolveConnecting();
     }
     try {
         const tcpSocket = await connectAndWrite(addressRemote, portRemote);
-        await remoteSocketToWS(tcpSocket, webSocket, retry, log);
+        remoteSocketToWS(tcpSocket, webSocket, retry, log).catch((err) => {
+            log("remoteSocketToWS error", err);
+            safeCloseWebSocket(webSocket);
+        });
     } catch (e) {
         log(`direct connect failed: ${e.message}, retrying via proxy`);
         await retry();

@@ -27,8 +27,8 @@ Client (Trojan over WSS)
   → fetch() — routes WebSocket vs HTTP endpoints (/link, /pool, /)
   → trojanOverWSHandler() — creates WebSocketPair + ReadableStream pipe
     → parseTrojanHeader() — validates password + parses SOCKS5 target
-    → handleTCPOutBound() — connects to target via cloudflare:sockets
-      → remoteSocketToWS() — TCP→WebSocket data forwarding, retries via proxy pool on zero-data
+    → connectThenPipe() — connects to target via cloudflare:sockets, blocks write() only until connected
+      → remoteSocketToWS() — TCP→WebSocket data forwarding (background), retries via proxy pool on zero-data
 ```
 
 ## Critical Implementation Details
@@ -49,18 +49,18 @@ The 56-byte password hash is the hex-encoded SHA224 (ASCII), not raw bytes. `raw
 Clients can send the Trojan header as a base64-encoded `Sec-WebSocket-Protocol` request header. The Worker decodes and enqueues it as the first chunk in the ReadableStream, before any WebSocket messages arrive. This is an optimization for clients that want to avoid a round trip.
 
 ### Retry Logic
-`remoteSocketToWS()` triggers retry when `hasIncomingData === false` after the TCP readable stream closes — meaning the remote sent zero bytes. This covers both connection failures and silent drops. Retry tries up to 4 proxy IPs from the pool before giving up and closing the WebSocket.
+`remoteSocketToWS()` triggers retry when `hasIncomingData === false` after the TCP readable stream closes — meaning the remote sent zero bytes. This covers both connection failures and silent drops. Retry races up to 4 proxy IPs in parallel via `Promise.any`, using the first successful connection and closing the rest.
 
 ## Key Functions
 
 - `fetch()` — Entry point. Routes HTTP (`/link`, `/pool`) vs WebSocket upgrade. Picks a random proxy IP from pool, triggers non-blocking `quickRefill()` if pool empty and not recently failed.
-- `scheduled()` — Cron handler (every 10 min). Runs `healthCheck()` (probe all pool IPs, prune dead), then `refill()` if pool < `POOL_MIN` (10).
+- `scheduled()` — Cron handler (every 10 min). Runs `healthCheck()` (probe all pool IPs, prune dead), then `refill()` if pool < `POOL_MIN` (4).
 - `getPool()` — Returns healthy IP pool or `FALLBACK_PROXY_IPS`. Synchronous, zero blocking.
 - `quickRefill()` — Fast partial refill using DoH + one GitHub source only. Non-blocking, single-flight via `_quickRefilling` flag. Used at request-time when pool is empty.
-- `healthCheck()` — Probes all pool IPs concurrently (`PROBE_CONCURRENCY`=6, `PROBE_TIMEOUT_MS`=100ms), removes dead ones.
+- `healthCheck()` — Probes all pool IPs concurrently (`PROBE_CONCURRENCY`=6, `PROBE_TIMEOUT_MS`=60ms), removes dead ones.
 - `refill()` — Full refill from all `SOURCE_TIERS`. Single-flight via `_refilling` promise. 90s stuck-lock detection.
 - `parseTrojanHeader(buffer, sha224Password)` — Parses Trojan wire format. Handles Blob/ArrayBufferView fallback.
-- `handleTCPOutBound()` — Direct TCP connect to target; on failure or zero-data, retries through proxy pool.
+- `connectThenPipe()` — Direct TCP connect to target. Blocks the `write()` callback only until the TCP socket is connected and `remoteSocketWrapper.value` is set, then runs `remoteSocketToWS` in the background. On direct connect failure, retries through proxy pool.
 - `remoteSocketToWS()` — Pipes TCP readable→WebSocket send. Triggers `retry()` if zero incoming data.
 - `timingSafeEqual()` — Constant-time comparison that re-encodes both sides to avoid timing leaks from the TextDecoder path.
 - `probeOne(addr)` — TCP connectivity check. Defaults to port 443. Used to validate pool candidates.
@@ -69,8 +69,8 @@ Clients can send the Trojan header as a base64-encoded `Sec-WebSocket-Protocol` 
 ## Proxy IP Pool
 
 Pool-health-driven model (no TTL, no cache expiry):
-- Pool target: `POOL_MIN`=10 to `POOL_MAX`=50 healthy IPs
-- Cron (every 10 min): health check all → prune dead → refill from IPDB if pool < 10
+- Pool target: `POOL_MIN`=4 to `POOL_MAX`=16 healthy IPs
+- Cron (every 10 min): health check all → prune dead → refill from IPDB if pool < 4
 - Request time: `getPool()` reads pool synchronously, picks random IP, zero blocking
 - Cold start: `quickRefill()` (DoH + GitHub, 15s timeout) on first request; falls back to `FALLBACK_PROXY_IPS`
 
