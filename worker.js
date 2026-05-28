@@ -23,7 +23,7 @@ const PROXYIP_DOH_DOMAINS = [
 const POOL_MIN = 4;
 const POOL_MAX = 16;
 const PROBE_CONCURRENCY = 6;
-const PROBE_TIMEOUT_MS = 60;
+const PROBE_TIMEOUT_MS = 100;
 
 let _pool = [];
 let _refilling = null;
@@ -651,37 +651,37 @@ async function connectThenPipe(remoteSocket, addressRemote, portRemote, rawClien
 }
 
 function makeReadableWebSocketStream(webSocketServer, earlyDataHeader, log) {
-    let readableStreamCancel = false;
-    let streamErrored = false;
+    let settled = false;
     const stream = new ReadableStream({
         start(controller) {
             webSocketServer.addEventListener("message", (event) => {
-                if (readableStreamCancel || streamErrored) return;
+                if (settled) return;
                 controller.enqueue(event.data);
             });
             webSocketServer.addEventListener("close", () => {
                 safeCloseWebSocket(webSocketServer);
-                if (readableStreamCancel || streamErrored) return;
-                controller.close();
+                if (settled) return;
+                settled = true;
+                try { controller.close(); } catch (_) {}
             });
             webSocketServer.addEventListener("error", (err) => {
                 log("webSocketServer error", err?.message || err?.type || String(err));
-                if (streamErrored) return;
-                streamErrored = true;
-                controller.error(err);
+                if (settled) return;
+                settled = true;
+                try { controller.error(err); } catch (_) {}
             });
             const { earlyData, error } = base64ToArrayBuffer(earlyDataHeader);
             if (error) {
-                streamErrored = true;
+                settled = true;
                 controller.error(error);
             } else if (earlyData) {
                 controller.enqueue(earlyData);
             }
         },
         cancel(reason) {
-            if (readableStreamCancel) return;
+            if (settled) return;
             log(`readableStream was canceled, due to ${reason}`);
-            readableStreamCancel = true;
+            settled = true;
             safeCloseWebSocket(webSocketServer);
         }
     });
