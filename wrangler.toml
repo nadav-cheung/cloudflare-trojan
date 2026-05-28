@@ -39,7 +39,6 @@ head_sampling_rate = 1
 
 
 [placement]
-mode = "off"
 host = "fnnas.nadav.com.cn:5666"
 
 [triggers]
