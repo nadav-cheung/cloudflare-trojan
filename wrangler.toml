@@ -1,4 +1,4 @@
-name = "cloudflare-trojan"
+name = "speedtest-cdn"
 main = "worker.js"
 compatibility_date = "2026-05-26"
 
