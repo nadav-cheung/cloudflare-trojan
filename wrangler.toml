@@ -43,3 +43,7 @@ host = "fnnas.nadav.com.cn:5666"
 
 [triggers]
 crons = ["*/10 * * * *"]
+
+[routes]
+pattern = "speedtest-cdn.nadav.com.cn/*"
+zone_name = "nadav.com.cn"
