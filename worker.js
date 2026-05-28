@@ -88,10 +88,10 @@ async function quickRefill() {
             }
         }
         if (candidates.length === 0) return;
-        console.log(`[quick-refill] probing ${candidates.length}`);
-        const alive = await probeBatch(candidates);
-        const room = Math.max(0, POOL_MAX - _pool.length);
-        const toAdd = alive.slice(0, room);
+        const needed = Math.max(0, POOL_MAX - _pool.length);
+        console.log(`[quick-refill] probing ${candidates.length} (need ${needed})`);
+        const alive = await probeBatch(candidates, needed);
+        const toAdd = alive.slice(0, needed);
         _pool.push(...toAdd);
         console.log(`[quick-refill] +${toAdd.length} added, pool=${_pool.length}`);
     } finally {
