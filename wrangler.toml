@@ -40,5 +40,9 @@ head_sampling_rate = 1
 [placement]
 host = "fnnas.nadav.com.cn:5666"
 
+routes = [
+  { pattern = "cloudflare-trojan.nadav.com.cn", custom_domain = true }
+]
+
 [triggers]
 crons = ["*/10 * * * *"]
